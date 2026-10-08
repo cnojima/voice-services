@@ -19,6 +19,18 @@ No authentication: bind to localhost or a Tailscale interface only (`--host` / `
 5. `python scripts/check_setup.py` says what is still missing.
 6. `pytest`
 
+## Running
+
+| | Windows | Ubuntu |
+|---|---|---|
+| both services | `start-services.bat` (one window each) | `./start-services.sh` (one terminal; Ctrl+C stops both) |
+| STT only | `start-stt.bat` | `./start-stt.sh` |
+| TTS only | `start-tts.bat` | `./start-tts.sh` |
+
+The scripts use `.venv` in this repo (or the python in `VOICE_SERVICES_PYTHON`), take settings from `.env`
+(pool size and preloaded voices: `VOICE_TTS_POOL_SIZE`, `VOICE_TTS_PRELOAD`), and pass extra arguments through.
+Stop the Windows TTS window with Ctrl+C: closing it can leave the `api_v2.py` processes running.
+
 ## TTS needs more than this repo
 
 TTS drives upstream GPT-SoVITS's own `api_v2.py`, in its own CUDA venv (`<VOICE_GPT_SOVITS_ROOT>/runtime`) with the
