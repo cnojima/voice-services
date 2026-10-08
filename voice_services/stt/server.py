@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -73,7 +74,23 @@ async def transcribe(request: Request, language: str | None = None, candidates: 
         language = t.detect_language(audio, _candidates(candidates))
 
     text, info = t.transcribe(audio, language)
+    filtered = info.pop("filtered_text", None)
+    _log_request(audio, language, text, filtered, info)
     return JSONResponse({"text": text, "language": language, **info})
+
+
+def _log_request(audio: np.ndarray, language: str, text: str, filtered: str | None, info: dict) -> None:
+    """One line per /transcribe, to tell mic noise from a real hallucination bug: rms/peak
+    near zero means silence, a modest rms with no speech is room/mic noise. `dropped` is
+    what the hallucination filter suppressed."""
+    rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    print(
+        f"[stt] {time.strftime('%H:%M:%S')} dur={info['duration_s']:.2f}s rms={rms:.4f} peak={peak:.3f} "
+        f"lang={language} no_speech={info['max_no_speech_prob']:.2f} logprob={info['avg_logprob']:.2f} "
+        f"text={text!r}" + (f" dropped={filtered!r}" if filtered is not None else ""),
+        flush=True,
+    )
 
 
 def build_parser():

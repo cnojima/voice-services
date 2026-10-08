@@ -97,6 +97,7 @@ class Transcriber:
         }
 
         if self._is_hallucination(text, segments, max_no_speech, avg_logprob):
+            info["filtered_text"] = text
             return "", info
         return text, info
 
