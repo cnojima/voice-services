@@ -174,3 +174,43 @@ def test_close_is_repeatable(tmp_path):
     inst.close()
     inst.close()
     assert inst.closed is True
+
+
+def _wav_header(sample_rate: int) -> bytes:
+    import struct
+
+    return b"RIFF" + struct.pack("<I", 36) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16) + b"data" + struct.pack("<I", 0)
+
+
+def test_stream_tts_reads_the_sample_rate_and_yields_sample_aligned_pcm(tmp_path):
+    _voice(tmp_path)
+    fake = FakeUpstream()
+    inst = _instance(tmp_path, fake)
+    inst.start("ayaka")
+    head = _wav_header(32000)
+    # header split across chunks, then audio chunks cut mid-sample
+    parts = [head[:10], head[10:] + b"\x01", b"\x00\x02", b"\x00\x03\x00"]
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=iter(parts))
+
+    inst._client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    sr, chunks = inst.stream_tts("hi", "ja")
+    pcm = b"".join(chunks)
+
+    assert sr == 32000
+    assert pcm == b"\x01\x00\x02\x00\x03\x00"
+    assert seen["body"]["streaming_mode"] is True and seen["body"]["media_type"] == "wav"
+
+
+def test_stream_tts_raises_before_returning_on_an_upstream_error(tmp_path):
+    _voice(tmp_path)
+    inst = _instance(tmp_path, FakeUpstream())
+    inst.start("ayaka")
+    inst._client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(400, text="bad")))
+
+    with pytest.raises(RuntimeError, match="400"):
+        inst.stream_tts("hi", "ja")

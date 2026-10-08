@@ -20,6 +20,13 @@ from __future__ import annotations
 import json
 import os
 
+from voice_services import env
+
+
+def default_weights_root() -> str:
+    """VOICE_WEIGHTS_ROOT if set, else a `voice-weights` dir beside this repo."""
+    return os.environ.get("VOICE_WEIGHTS_ROOT") or str(env.REPO_ROOT.parent / "voice-weights")
+
 
 class VoiceNotFoundError(RuntimeError):
     pass

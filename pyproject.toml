@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+weights = ["huggingface_hub"]
 
 [tool.setuptools.packages.find]
 include = ["voice_services*"]

@@ -7,8 +7,6 @@ GPT-SoVITS fine-tuned character voices over HTTP. Default
 project talks to upstream GPT-SoVITS's own `api_v2.py` directly. This server
 sits in front of one or more `api_v2.py` processes, supervises them, and hides
 their quirks (voice manifests, reference audio, the degenerate-output retry).
-Sections marked *(verify)* depend on upstream behavior to confirm during
-implementation.
 
 CUDA only. No authentication: bind to localhost or a Tailscale interface only.
 
@@ -53,9 +51,14 @@ them):
 }
 ```
 
-`ready` is the server as a whole: `true` once every preloaded instance is
-warm. The server accepts connections during startup, so clients should poll
-this rather than rely on connect errors. An instance with `voice: null` is idle.
+`ready` is the server as a whole: `true` once the `--preload` voices have all
+finished loading (immediately if there are none). The server accepts connections
+during startup, so clients should poll this rather than rely on connect errors.
+An instance with `voice: null` is idle.
+
+`status` is `"degraded"` when any instance failed to start or swap; that
+instance then carries an `error` string, and it is retried on the next request
+that needs it. A failed preload still sets `ready` to `true`, so check `status`.
 
 ## `GET /voices`
 
@@ -98,8 +101,10 @@ plus `X-Sample-Rate: <hz>`. The body is the complete utterance.
 
 **Streaming response 200:** `Content-Type: audio/L16`, raw little-endian
 16-bit mono PCM with no header, chunked transfer, plus `X-Sample-Rate: <hz>`
-sent before the first chunk. Chunks arrive as generated. *(verify: maps to
-upstream `streaming_mode`; confirm chunk boundaries and sample rate in step 3.)*
+sent before the first chunk. Chunks arrive as generated and always contain whole
+samples. The sample rate is read from the WAV header the upstream sends first; the
+header itself is not forwarded. Measured on an RTX 5090: first byte in about
+0.3 s, versus about 1.4 s for the complete non-streaming response to the same text.
 
 **Server-side behavior callers can rely on**
 

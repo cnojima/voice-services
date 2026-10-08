@@ -18,6 +18,8 @@ import sys
 import tempfile
 import time
 from io import BytesIO
+from itertools import chain
+from typing import Iterator
 
 import httpx
 import numpy as np
@@ -35,6 +37,7 @@ _CNHUBERT_BASE_PATH = "GPT_SoVITS/pretrained_models/chinese-hubert-base"
 _WARMUP_TEXT = "これはウォームアップです。"
 _STARTUP_POLL_S = 1.0
 SYNTHESIZE_RETRIES = 3
+_WAV_HEADER_BYTES = 44  # upstream sends a bare header chunk first when streaming wav
 
 _CUSTOM_CONFIG_TEMPLATE = """\
 custom:
@@ -183,28 +186,71 @@ class UpstreamInstance:
         )
         return last_result
 
-    def _request_tts(self, text: str, language: str) -> tuple[np.ndarray, int]:
+    def _tts_payload(self, text: str, language: str) -> dict:
         # prompt_lang is the reference clip's own language (fixed per voice); text_lang is the
         # language of the text being spoken.
-        resp = self._client.post(
-            f"{self._url}/tts",
-            json={
-                "text": text,
-                "text_lang": language,
-                "ref_audio_path": self._voice["ref_audio_path"],
-                "prompt_text": self._voice["ref_text"],
-                "prompt_lang": self._voice["ref_lang"],
-                "top_p": 1,
-                "temperature": 1,
-                "media_type": "wav",
-            },
-        )
+        return {
+            "text": text,
+            "text_lang": language,
+            "ref_audio_path": self._voice["ref_audio_path"],
+            "prompt_text": self._voice["ref_text"],
+            "prompt_lang": self._voice["ref_lang"],
+            "top_p": 1,
+            "temperature": 1,
+            "media_type": "wav",
+        }
+
+    def stream_tts(self, text: str, language: str) -> tuple[int, Iterator[bytes]]:
+        """Start a streamed synthesis. Returns (sample_rate, chunks) once the first bytes have
+        arrived, so failures surface before the caller commits to a response. `chunks` yields
+        raw little-endian 16-bit mono PCM, aligned to whole samples; closing it (or exhausting
+        it) releases the upstream connection. No short-output retry: bytes already sent cannot
+        be taken back."""
+        cm = self._client.stream("POST", f"{self._url}/tts", json={**self._tts_payload(text, language), "streaming_mode": True})
+        resp = cm.__enter__()
+        try:
+            if resp.status_code != 200:
+                resp.read()
+                raise RuntimeError(f"GPT-SoVITS API {resp.status_code}: {resp.text[:300]}")
+            chunks = resp.iter_bytes()
+            head = b""
+            while len(head) < _WAV_HEADER_BYTES:
+                more = next(chunks, b"")
+                if not more:
+                    raise RuntimeError("GPT-SoVITS stream ended before the WAV header")
+                head += more
+            sample_rate = int.from_bytes(head[24:28], "little")  # fmt chunk: sample rate
+        except BaseException:
+            cm.__exit__(None, None, None)
+            raise
+
+        def gen() -> Iterator[bytes]:
+            carry = head[_WAV_HEADER_BYTES:]
+            try:
+                for chunk in chain([b""], chunks):
+                    data = carry + chunk
+                    cut = len(data) - len(data) % 2
+                    carry = data[cut:]
+                    if cut:
+                        yield data[:cut]
+            finally:
+                cm.__exit__(None, None, None)
+
+        return sample_rate, gen()
+
+    def _request_tts(self, text: str, language: str) -> tuple[np.ndarray, int]:
+        resp = self._client.post(f"{self._url}/tts", json=self._tts_payload(text, language))
         if resp.status_code != 200:
             raise RuntimeError(f"GPT-SoVITS API {resp.status_code}: {resp.text[:300]}")
         import soundfile as sf
 
         data, sr = sf.read(BytesIO(resp.content), dtype="float32", always_2d=True)
         return np.ascontiguousarray(data.mean(axis=1), dtype=np.float32), sr
+
+    @property
+    def alive(self) -> bool:
+        """Started, and the subprocess (if we launched one) is still running."""
+        return self.ready and (self._proc is None or self._proc.poll() is None)
 
     @property
     def closed(self) -> bool:
