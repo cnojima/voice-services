@@ -24,8 +24,8 @@ Japanese voice warm) and is configurable; the intended next step is 3
 - A request for a voice that is loaded in some instance goes to that instance
   with no delay.
 - A request for a voice that is loaded nowhere is assigned to a free instance,
-  else the least recently used one, which hot-swaps its weights first
-  (seconds). This delays only requests for that instance.
+  else the least recently used one (never a pinned one), which hot-swaps its
+  weights first (seconds). This delays only requests for that instance.
 - Different instances synthesize in parallel. Requests to the same instance are
   serialized in arrival order.
 
@@ -35,6 +35,7 @@ them):
 | setting | meaning |
 |---|---|
 | `--pool-size N` | Number of upstream processes. Default 2. |
+| `--pin a,b` | Voices that keep their instance. A pinned voice is loaded at startup (whether or not it is in `--preload`), always served by its own instance, and never chosen to swap: other voices share the remaining instances. Must be fewer than the pool size; an unknown name stops startup. Use it for the voice that is almost always in use (e.g. `--pin rosamund`), so asking for another voice cannot evict it. |
 | `--preload a,b,c` | Voices loaded at startup, one per instance, in order. Voices beyond `N` are ignored with a warning; fewer than `N` leaves the rest idle until first use. Preloaded voices are also warmed up with a synthesis. |
 
 ## `GET /`
@@ -45,7 +46,7 @@ them):
   "ready": true,
   "instances": [
     {"voice": "ayaka", "ready": true, "busy": false},
-    {"voice": "rosamund", "ready": true, "busy": true},
+    {"voice": "rosamund", "ready": true, "busy": true, "pinned": true},
     {"voice": null, "ready": true, "busy": false}
   ]
 }
@@ -54,7 +55,8 @@ them):
 `ready` is the server as a whole: `true` once the `--preload` voices have all
 finished loading (immediately if there are none). The server accepts connections
 during startup, so clients should poll this rather than rely on connect errors.
-An instance with `voice: null` is idle.
+An instance with `voice: null` is idle. `pinned: true` (present only when true) marks
+an instance holding a `--pin` voice.
 
 `status` is `"degraded"` when any instance failed to start or swap; that
 instance then carries an `error` string, and it is retried on the next request
@@ -64,19 +66,21 @@ that needs it. A failed preload still sets `ready` to `true`, so check `status`.
 
 Voices available on disk. Optional `?language=ja` keeps only voices whose
 reference clip is in that language. `loaded` lists the voices currently held by
-an instance (the ones that will answer without a swap).
+an instance (the ones that will answer without a swap). `pinned` lists the `--pin`
+voices, which are never swapped out (empty when none).
 
 ```json
 {
   "loaded": ["ayaka", "rosamund"],
+  "pinned": ["rosamund"],
   "voices": [{"name": "ayaka", "ref_lang": "ja", "version": "v2"}]
 }
 ```
 
 ## `POST /voice`
 
-Ensure a voice is loaded in some instance, swapping the least recently used one
-if needed. Use it to warm a voice ahead of the first `/tts`.
+Ensure a voice is loaded in some instance, swapping the least recently used
+unpinned one if needed. Use it to warm a voice ahead of the first `/tts`.
 
 Request: `{"name": "hutao"}`. Response 200: `{"voice": "hutao", "swapped": true}`
 (`swapped` is `false` if it was already loaded). 404 if the name is not an

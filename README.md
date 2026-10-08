@@ -43,7 +43,7 @@ py -3.12 -m venv .venv
 | TTS only | `start-tts.bat` | `./start-tts.sh` |
 
 The scripts use `.venv` in this repo (or the python in `VOICE_SERVICES_PYTHON`), take settings from `.env`
-(pool size and preloaded voices: `VOICE_TTS_POOL_SIZE`, `VOICE_TTS_PRELOAD`), and pass extra arguments through.
+(pool size, preloaded and pinned voices: `VOICE_TTS_POOL_SIZE`, `VOICE_TTS_PRELOAD`, `VOICE_TTS_PIN`), and pass extra arguments through.
 Stop the Windows TTS window with Ctrl+C: closing it can leave the `api_v2.py` processes running.
 
 ## TTS needs more than this repo

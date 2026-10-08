@@ -2,6 +2,7 @@
 
     python -m voice_services.tts                                  # :8772, pool of 2
     python -m voice_services.tts --pool-size 3 --preload ayaka,rosamund,kafka
+    python -m voice_services.tts --pin rosamund --preload ayaka    # rosamund is never swapped out
 """
 from __future__ import annotations
 
@@ -72,7 +73,7 @@ def voices(language: str | None = None) -> JSONResponse:
         except VoiceNotFoundError:
             continue
         out.append({"name": name, "ref_lang": manifest["ref_lang"], "version": manifest["version"]})
-    return JSONResponse({"loaded": pool.loaded(), "voices": out})
+    return JSONResponse({"loaded": pool.loaded(), "pinned": pool.pinned(), "voices": out})
 
 
 @app.post("/voice")
@@ -130,6 +131,9 @@ def build_parser():
                    help="upstream api_v2.py processes, one voice each")
     p.add_argument("--preload", default=os.environ.get("VOICE_TTS_PRELOAD", ""),
                    help="comma-separated voices to load at startup, one per instance")
+    p.add_argument("--pin", default=os.environ.get("VOICE_TTS_PIN", ""),
+                   help="comma-separated voices that keep their instance: loaded at startup and never swapped out "
+                        "(fewer than the pool size, so one instance can still swap)")
     p.add_argument("--upstream-base-port", type=int, default=int(os.environ.get("VOICE_TTS_UPSTREAM_PORT", "9890")),
                    help="first localhost port for the upstream processes (one per instance)")
     return p
@@ -143,7 +147,13 @@ def main(argv: list[str] | None = None) -> None:
         gpt_sovits_root=os.environ.get("VOICE_GPT_SOVITS_ROOT", ""),
         ffmpeg_bin=os.environ.get("VOICE_FFMPEG_BIN", ""),
     )
-    app.state.pool = TTSPool(cfg, size=args.pool_size, base_port=args.upstream_base_port)
+    pins = [v.strip() for v in args.pin.split(",") if v.strip()]
+    try:
+        for name in pins:
+            load_voice(cfg.weights_root, name)  # a typo should stop startup, not surface at the first request
+        app.state.pool = TTSPool(cfg, size=args.pool_size, base_port=args.upstream_base_port, pinned=pins)
+    except (VoiceNotFoundError, ValueError) as e:
+        sys.exit(f"--pin: {e}")
     app.state.preload = [v.strip() for v in args.preload.split(",") if v.strip()]
 
     for stream in (sys.stdout, sys.stderr):

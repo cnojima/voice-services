@@ -4,12 +4,17 @@ Routing: a voice already held by an instance goes there; otherwise a never-used 
 started with it; otherwise the least recently used slot hot-swaps. Slots work in parallel;
 calls to one slot are serialized by its lock. Instances are started lazily (or by `preload`)
 and replaced if their process dies.
+
+A pinned voice owns a slot for the life of the pool: it is loaded at startup, requests for it
+always go to its slot, and that slot is never chosen to swap. Pin the voice that is almost always
+in use (the English one) so choosing other voices cannot evict it. At least one slot stays
+unpinned, or nothing else could ever load.
 """
 from __future__ import annotations
 
 import itertools
 import threading
-from typing import Callable
+from typing import Callable, Sequence
 
 import httpx
 
@@ -27,6 +32,7 @@ class _Slot:
         self.port = port
         self.lock = threading.Lock()
         self.inst: UpstreamInstance | None = None
+        self.pin: str | None = None  # a pinned voice stays in this slot: never evicted, never replaced
         self.target: str | None = None  # voice this slot is (being) assigned; set under the pool lock
         self.last_used = 0
         self.error: str | None = None
@@ -66,12 +72,20 @@ class TTSPool:
         size: int = 2,
         base_port: int = 9890,
         factory: Callable[[TTSConfig, int], UpstreamInstance] = UpstreamInstance,
+        pinned: Sequence[str] = (),
     ):
         if size < 1:
             raise ValueError("pool size must be at least 1")
+        pins = list(dict.fromkeys(pinned))  # in order, each once
+        if len(pins) >= size:
+            raise ValueError(
+                f"cannot pin {len(pins)} voice(s) in a pool of {size}: at least one instance must stay free to swap"
+            )
         self.cfg = cfg
         self._factory = factory
         self._slots = [_Slot(base_port + i) for i in range(size)]
+        for slot, voice in zip(self._slots, pins):
+            slot.pin = slot.target = voice
         self._lock = threading.Lock()
         self._ticks = itertools.count(1)
         self._preload_done = threading.Event()
@@ -83,6 +97,10 @@ class TTSPool:
 
     # -- state ---------------------------------------------------------------------------
 
+    def pinned(self) -> list[str]:
+        """The pinned voices, in the order they were given."""
+        return [s.pin for s in self._slots if s.pin is not None]
+
     def loaded(self) -> list[str]:
         return [s.inst.voice_name for s in self._slots if s.inst is not None and s.inst.ready]
 
@@ -92,6 +110,7 @@ class TTSPool:
                 "voice": s.inst.voice_name if s.inst is not None and s.inst.ready else None,
                 "ready": s.inst is not None and s.inst.ready,
                 "busy": s.lock.locked(),
+                **({"pinned": True} if s.pin else {}),
                 **({"error": s.error} if s.error else {}),
             }
             for s in self._slots
@@ -108,10 +127,11 @@ class TTSPool:
         for s in self._slots:
             if s.target == voice:
                 return s
-        for s in self._slots:
+        free = [s for s in self._slots if s.pin is None]  # a pinned slot never swaps
+        for s in free:
             if s.target is None:
                 return s
-        return min(self._slots, key=lambda s: s.last_used)
+        return min(free, key=lambda s: s.last_used)
 
     def acquire(self, voice: str) -> Lease:
         """Block until an instance holds `voice` and is exclusively ours. Raises
@@ -155,20 +175,22 @@ class TTSPool:
 
     def _restore_target(self, slot: _Slot) -> None:
         with self._lock:
-            slot.target = slot.inst.voice_name if slot.inst is not None and slot.inst.ready else None
+            slot.target = slot.inst.voice_name if slot.inst is not None and slot.inst.ready else slot.pin
 
     def _discard(self, slot: _Slot) -> None:
         if slot.inst is not None:
             slot.inst.close()
         slot.inst = None
         with self._lock:
-            slot.target = None
+            slot.target = slot.pin  # a pinned slot is still spoken for; the next request restarts it
 
     # -- lifecycle -----------------------------------------------------------------------
 
     def preload(self, voices: list[str]) -> list[threading.Thread]:
-        """Start loading `voices` (one per slot, in order) in the background. `status()["ready"]`
-        turns true when every one has finished, successfully or not (failures show as `error`)."""
+        """Start loading `voices` (one per slot, in order) in the background, after the pinned voices,
+        which always load. `status()["ready"]` turns true when every one has finished, successfully
+        or not (failures show as `error`)."""
+        voices = list(dict.fromkeys([*self.pinned(), *voices]))
         if len(voices) > self.size:
             print(f"--preload lists {len(voices)} voices but the pool has {self.size} instances; ignoring "
                   f"{', '.join(voices[self.size:])}", flush=True)

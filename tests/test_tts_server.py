@@ -43,6 +43,31 @@ def test_voices_lists_available_and_loaded(client):
     assert [v["name"] for v in client.get("/voices", params={"language": "en"}).json()["voices"]] == ["juliet"]
 
 
+def test_voices_lists_the_pinned_ones(tmp_path):
+    FakeInstance.reset()
+    make_voices(tmp_path, "ayaka", "juliet", juliet={"ref_lang": "en"})
+    tts_server.app.state.pool = TTSPool(
+        TTSConfig(weights_root=str(tmp_path)), size=2, base_port=9200, factory=FakeInstance, pinned=["juliet"]
+    )
+    tts_server.app.state.preload = []
+    with TestClient(tts_server.app) as c:
+        assert c.get("/voices").json()["pinned"] == ["juliet"]
+        # asking for other voices never displaces it
+        for name in ("ayaka", "juliet", "ayaka"):
+            assert c.post("/voice", json={"name": name}).status_code == 200
+        assert "juliet" in c.get("/voices").json()["loaded"]
+        assert c.get("/").json()["instances"][0]["pinned"] is True
+
+
+def test_voices_pinned_is_empty_without_a_pin(client):
+    assert client.get("/voices").json()["pinned"] == []
+
+
+def test_the_pin_flag_is_parsed():
+    assert tts_server.build_parser().parse_args(["--pin", "rosamund,kafka"]).pin == "rosamund,kafka"
+    assert tts_server.build_parser().parse_args([]).pin == ""
+
+
 def test_set_voice_reports_whether_it_swapped(client):
     assert client.post("/voice", json={"name": "ayaka"}).json() == {"voice": "ayaka", "swapped": True}
     assert client.post("/voice", json={"name": "ayaka"}).json() == {"voice": "ayaka", "swapped": False}
