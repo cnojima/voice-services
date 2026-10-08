@@ -41,6 +41,24 @@ def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "model": t.cfg.model, "device": t.device})
 
 
+def _pcm(body: bytes) -> np.ndarray:
+    if len(body) % 4 != 0:
+        raise HTTPException(400, "body length is not a multiple of 4 bytes (expected float32 PCM)")
+    return np.frombuffer(body, dtype="<f4").copy()  # writable: torch warns on read-only arrays
+
+
+def _candidates(candidates: str | None) -> tuple[str, ...] | None:
+    return tuple(c.strip() for c in candidates.split(",") if c.strip()) if candidates else None
+
+
+@app.post("/detect")
+async def detect(request: Request, candidates: str | None = None) -> JSONResponse:
+    """Detection alone, for callers that detect and transcribe as two steps. `candidates` as
+    for /transcribe."""
+    t: Transcriber = app.state.transcriber
+    return JSONResponse({"language": t.detect_language(_pcm(await request.body()), _candidates(candidates))})
+
+
 @app.post("/transcribe")
 async def transcribe(request: Request, language: str | None = None, candidates: str | None = None) -> JSONResponse:
     """`language` pins the transcript language, skipping detection (fastest,
@@ -48,15 +66,11 @@ async def transcribe(request: Request, language: str | None = None, candidates: 
     (comma-separated) to auto-detect among those first, same as
     Transcriber.detect_language. Neither given: detects among the server's
     own cfg.languages."""
-    body = await request.body()
-    if len(body) % 4 != 0:
-        raise HTTPException(400, "body length is not a multiple of 4 bytes (expected float32 PCM)")
-    audio = np.frombuffer(body, dtype="<f4").copy()  # writable: torch warns on read-only arrays
+    audio = _pcm(await request.body())
 
     t: Transcriber = app.state.transcriber
     if language is None:
-        cand = tuple(c.strip() for c in candidates.split(",") if c.strip()) if candidates else None
-        language = t.detect_language(audio, cand)
+        language = t.detect_language(audio, _candidates(candidates))
 
     text, info = t.transcribe(audio, language)
     return JSONResponse({"text": text, "language": language, **info})

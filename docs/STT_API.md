@@ -57,6 +57,17 @@ error. The filter runs server side; callers should not re-implement it.
 | 400 | body length is not a multiple of 4 bytes |
 | 422 | malformed query parameters |
 
+## `POST /detect`
+
+Language detection alone, for callers that detect and transcribe as two steps (the `voice`
+project's orchestrator does). Same body and `candidates` parameter as `/transcribe`.
+
+```json
+{"language": "ja"}
+```
+
+A single candidate is returned without running the model. Errors as for `/transcribe`.
+
 ## Concurrency
 
 One model instance. Requests are processed one at a time; concurrent callers
