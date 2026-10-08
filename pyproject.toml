@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-services"
+version = "0.1.0"
+description = "Whisper STT and GPT-SoVITS TTS as HTTP services (CUDA-first)"
+requires-python = ">=3.12"
+dependencies = [
+    "openai-whisper==20250625",
+    "numpy>=2",
+    "httpx>=0.28",
+    "soundfile>=0.13",
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    # torch is deliberately not listed: install the CUDA build for your machine
+    # first (README.md), or pip pulls a CPU wheel on Windows.
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["voice_services*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
