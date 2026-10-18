@@ -94,6 +94,12 @@ class Transcriber:
             "max_no_speech_prob": max_no_speech,
             "avg_logprob": avg_logprob,
             "duration_s": duration,
+            # Timed segments (seconds), for callers that need timestamps (e.g. video transcripts).
+            "segments": [
+                {"start": float(g["start"]), "end": float(g["end"]), "text": g.get("text", "").strip()}
+                for g in segments
+                if "start" in g and "end" in g and g.get("text", "").strip()
+            ],
         }
 
         if self._is_hallucination(text, segments, max_no_speech, avg_logprob):

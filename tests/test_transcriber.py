@@ -78,3 +78,28 @@ def test_detect_language_can_be_narrowed_per_call_without_touching_the_loaded_se
         assert t.detect_language(audio, ("ja",)) == "ja"  # one candidate: no model call needed
     finally:
         stt_mod.whisper.log_mel_spectrogram, stt_mod.whisper.pad_or_trim = orig_mel, orig_pad
+
+
+def test_transcribe_returns_timed_segments_and_keeps_existing_fields():
+    import numpy as np
+
+    class Model:
+        def transcribe(self, audio, **kw):
+            return {
+                "text": " Open the box. Add water.",
+                "segments": [
+                    {"start": 0.0, "end": 2.5, "text": " Open the box.", "no_speech_prob": 0.01, "avg_logprob": -0.2},
+                    {"start": 2.5, "end": 4.0, "text": " Add water.", "no_speech_prob": 0.02, "avg_logprob": -0.3},
+                    {"start": 4.0, "end": 5.0, "text": "  ", "no_speech_prob": 0.9, "avg_logprob": -2.0},
+                ],
+            }
+
+    t = object.__new__(Transcriber)
+    t.model, t.device = Model(), "cpu"
+    text, info = t.transcribe(np.zeros(16000, dtype="f4"), "en")
+    assert text == "Open the box. Add water."
+    assert info["duration_s"] == 1.0 and "max_no_speech_prob" in info and "avg_logprob" in info
+    assert info["segments"] == [
+        {"start": 0.0, "end": 2.5, "text": "Open the box."},
+        {"start": 2.5, "end": 4.0, "text": "Add water."},
+    ]
