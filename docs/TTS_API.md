@@ -95,6 +95,11 @@ Request (JSON):
 | `text` | yes | Text to speak. |
 | `text_lang` | yes | Language of `text` (`ja`, `en`). Not the reference clip's language, which is fixed per voice. |
 | `voice` | yes | Voice name. Routed as described under "Voices and the pool". |
+| `temperature` | no | Sampling temperature, `0 < x <= 2`. Default `1`. |
+| `top_p` | no | Nucleus sampling, `0 < x <= 1`. Default `1`. |
+| `top_k` | no | Top-k sampling, integer `>= 1`. Default: GPT-SoVITS's own. |
+
+The sampling fields apply to that request only, so a client can vary them per turn.
 
 `voice` is required: with a pool there is no meaningful "current voice".
 

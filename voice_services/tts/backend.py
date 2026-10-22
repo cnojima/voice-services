@@ -167,14 +167,15 @@ class UpstreamInstance:
             time.sleep(_STARTUP_POLL_S)
         raise TimeoutError(f"api_v2.py did not come up within {timeout_s:.0f}s; log: {self._log_path}")
 
-    def synthesize(self, text: str, language: str) -> tuple[np.ndarray, int]:
-        """Synthesize `text` (language `language`) in the current voice. Raises on any
+    def synthesize(self, text: str, language: str, sampling: dict | None = None) -> tuple[np.ndarray, int]:
+        """Synthesize `text` (language `language`) in the current voice. `sampling` overrides
+        temperature/top_p/top_k for this call only (see _tts_payload). Raises on any
         request/decode failure. Retries on an implausibly short result (see
         min_plausible_duration_s) before giving up and returning it anyway."""
         floor_s = min_plausible_duration_s(text)
         last_result = None
         for _attempt in range(SYNTHESIZE_RETRIES):
-            wav, sr = self._request_tts(text, language)
+            wav, sr = self._request_tts(text, language, sampling)
             last_result = wav, sr
             if len(wav) / sr >= floor_s:
                 return wav, sr
@@ -186,9 +187,10 @@ class UpstreamInstance:
         )
         return last_result
 
-    def _tts_payload(self, text: str, language: str) -> dict:
+    def _tts_payload(self, text: str, language: str, sampling: dict | None = None) -> dict:
         # prompt_lang is the reference clip's own language (fixed per voice); text_lang is the
-        # language of the text being spoken.
+        # language of the text being spoken. `sampling` may carry temperature, top_p and top_k;
+        # anything it omits keeps the default (top_k: upstream's own).
         return {
             "text": text,
             "text_lang": language,
@@ -198,15 +200,16 @@ class UpstreamInstance:
             "top_p": 1,
             "temperature": 1,
             "media_type": "wav",
+            **(sampling or {}),
         }
 
-    def stream_tts(self, text: str, language: str) -> tuple[int, Iterator[bytes]]:
+    def stream_tts(self, text: str, language: str, sampling: dict | None = None) -> tuple[int, Iterator[bytes]]:
         """Start a streamed synthesis. Returns (sample_rate, chunks) once the first bytes have
         arrived, so failures surface before the caller commits to a response. `chunks` yields
         raw little-endian 16-bit mono PCM, aligned to whole samples; closing it (or exhausting
         it) releases the upstream connection. No short-output retry: bytes already sent cannot
         be taken back."""
-        cm = self._client.stream("POST", f"{self._url}/tts", json={**self._tts_payload(text, language), "streaming_mode": True})
+        cm = self._client.stream("POST", f"{self._url}/tts", json={**self._tts_payload(text, language, sampling), "streaming_mode": True})
         resp = cm.__enter__()
         try:
             if resp.status_code != 200:
@@ -238,8 +241,8 @@ class UpstreamInstance:
 
         return sample_rate, gen()
 
-    def _request_tts(self, text: str, language: str) -> tuple[np.ndarray, int]:
-        resp = self._client.post(f"{self._url}/tts", json=self._tts_payload(text, language))
+    def _request_tts(self, text: str, language: str, sampling: dict | None = None) -> tuple[np.ndarray, int]:
+        resp = self._client.post(f"{self._url}/tts", json=self._tts_payload(text, language, sampling))
         if resp.status_code != 200:
             raise RuntimeError(f"GPT-SoVITS API {resp.status_code}: {resp.text[:300]}")
         import soundfile as sf
