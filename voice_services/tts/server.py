@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from voice_services import env
 from voice_services.config import TTSConfig
+from voice_services.tts import pronunciations
 from voice_services.tts.pool import TTSPool, TTSUnavailable
 from voice_services.tts.voices import VoiceNotFoundError, default_weights_root, list_voices, load_voice
 
@@ -43,6 +44,11 @@ class TTSRequest(BaseModel):
 
 class VoiceRequest(BaseModel):
     name: str
+
+
+def _respell(text: str, language: str) -> str:
+    lexicon = getattr(app.state, "pronunciations", {}).get(language)
+    return lexicon.apply(text) if lexicon else text
 
 
 def _pool() -> TTSPool:
@@ -89,11 +95,12 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     if req.text_lang not in TEXT_LANGUAGES:
         raise HTTPException(400, f"unsupported text_lang {req.text_lang!r}, expected one of {TEXT_LANGUAGES}")
 
+    text = _respell(req.text, req.text_lang)
     lease = _acquire(req.voice)
     if not stream:
         try:
             with lease:
-                wav, sr = lease.inst.synthesize(req.text, req.text_lang)
+                wav, sr = lease.inst.synthesize(text, req.text_lang)
         except Exception as e:  # noqa: BLE001 -- the lease already discarded a dead instance
             raise HTTPException(503, f"{type(e).__name__}: {e}") from e
         buf = BytesIO()
@@ -101,7 +108,7 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
         return Response(buf.getvalue(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
     try:
-        sr, chunks = lease.inst.stream_tts(req.text, req.text_lang)
+        sr, chunks = lease.inst.stream_tts(text, req.text_lang)
     except Exception as e:  # noqa: BLE001
         lease.release(e)
         raise HTTPException(503, f"{type(e).__name__}: {e}") from e
@@ -154,6 +161,10 @@ def main(argv: list[str] | None = None) -> None:
         app.state.pool = TTSPool(cfg, size=args.pool_size, base_port=args.upstream_base_port, pinned=pins)
     except (VoiceNotFoundError, ValueError) as e:
         sys.exit(f"--pin: {e}")
+    try:
+        app.state.pronunciations = pronunciations.load()
+    except ValueError as e:
+        sys.exit(f"pronunciations: {e}")
     app.state.preload = [v.strip() for v in args.preload.split(",") if v.strip()]
 
     for stream in (sys.stdout, sys.stderr):

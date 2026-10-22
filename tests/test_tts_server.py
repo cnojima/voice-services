@@ -128,3 +128,19 @@ def test_tts_is_503_when_no_instance_can_start(client):
     assert resp.status_code == 503
     assert "cannot start ayaka" in resp.json()["detail"]
     assert client.get("/").json()["status"] == "degraded"
+
+
+def test_tts_respells_words_from_the_lexicon(client):
+    from voice_services.tts.pronunciations import Lexicon
+
+    client.app.state.pronunciations = {"en": Lexicon({"API": "ay pee eye"})}
+    seen = []
+    orig = FakeInstance.synthesize
+    FakeInstance.synthesize = lambda self, text, language: (seen.append(text), orig(self, text, language))[1]
+    try:
+        client.post("/tts", json={"text": "The api is down.", "text_lang": "en", "voice": "juliet"})
+        client.post("/tts", json={"text": "The api is down.", "text_lang": "ja", "voice": "ayaka"})
+    finally:
+        FakeInstance.synthesize = orig
+
+    assert seen == ["The ay pee eye is down.", "The api is down."]
