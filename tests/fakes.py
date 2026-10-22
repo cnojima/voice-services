@@ -47,14 +47,16 @@ class FakeInstance:
         self.calls.append(("switch", name))
         self.voice_name = name
 
-    def synthesize(self, text, language):
+    def synthesize(self, text, language, sampling=None):
         if self.gate is not None:
             self.gate.wait(5)
         self.calls.append(("synth", self.voice_name, text, language))
+        self.sampling = sampling
         return np.zeros(SR, dtype=np.float32), SR
 
-    def stream_tts(self, text, language):
+    def stream_tts(self, text, language, sampling=None):
         self.calls.append(("stream", self.voice_name, text, language))
+        self.sampling = sampling
 
         def chunks():
             yield b"\x01\x00" * 100
