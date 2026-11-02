@@ -13,7 +13,8 @@ from contextlib import asynccontextmanager
 from io import BytesIO
 
 import soundfile as sf
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -55,8 +56,23 @@ class VoiceRequest(BaseModel):
 
 
 class PronunciationUpdate(BaseModel):
-    set: dict[str, str] = Field(default_factory=dict)  # word -> respelling, added or replaced
-    remove: list[str] = Field(default_factory=list)  # words to drop
+    set: dict[str, str] = Field(
+        default_factory=dict, description="Words to add or replace, word -> respelling.",
+        examples=[{"GPU": "jee pee you"}],
+    )
+    remove: list[str] = Field(default_factory=list, description="Words to drop.", examples=[["RAG"]])
+
+
+class Pronunciations(BaseModel):
+    lang: str
+    entries: dict[str, str] = Field(description="The whole lexicon, word -> respelling.")
+
+
+class Error(BaseModel):
+    detail: str
+
+
+_bearer = HTTPBearer(auto_error=False, description="The server's VOICE_TTS_ADMIN_TOKEN.")
 
 
 def _respell(text: str, language: str) -> str:
@@ -64,11 +80,11 @@ def _respell(text: str, language: str) -> str:
     return lexicon.apply(text) if lexicon else text
 
 
-def _require_admin(authorization: str | None) -> None:
+def _require_admin(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
     token = getattr(app.state, "admin_token", "")
     if not token:
         raise HTTPException(403, "pronunciation updates are disabled: set VOICE_TTS_ADMIN_TOKEN")
-    if not hmac.compare_digest((authorization or "").encode(), f"Bearer {token}".encode()):
+    if creds is None or not hmac.compare_digest(creds.credentials.encode(), token.encode()):
         raise HTTPException(401, "missing or wrong bearer token", headers={"WWW-Authenticate": "Bearer"})
 
 
@@ -114,17 +130,32 @@ def _check_lang(lang: str) -> None:
         raise HTTPException(404, f"unknown language {lang!r}, expected one of {TEXT_LANGUAGES}")
 
 
-@app.get("/pronunciations/{lang}")
+@app.get(
+    "/pronunciations/{lang}", tags=["pronunciations"], summary="Read a respelling lexicon",
+    response_model=Pronunciations, responses={404: {"model": Error, "description": "Unsupported language."}},
+)
 def get_pronunciations(lang: str) -> JSONResponse:
     _check_lang(lang)
     lexicon = getattr(app.state, "pronunciations", {}).get(lang)
     return JSONResponse({"lang": lang, "entries": lexicon.entries if lexicon else {}})
 
 
-@app.patch("/pronunciations/{lang}")
-def patch_pronunciations(lang: str, req: PronunciationUpdate, authorization: str | None = Header(None)) -> JSONResponse:
-    """Merge into pronunciations/<lang>.json and apply to the running server, no restart."""
-    _require_admin(authorization)
+@app.patch(
+    "/pronunciations/{lang}", tags=["pronunciations"], summary="Add, replace or remove respellings",
+    response_model=Pronunciations, dependencies=[Depends(_require_admin)],
+    responses={
+        400: {"model": Error, "description": "Empty word or spelling, or the existing file is malformed; nothing was written."},
+        401: {"model": Error, "description": "Missing or wrong bearer token."},
+        403: {"model": Error, "description": "Updates are disabled: the server has no VOICE_TTS_ADMIN_TOKEN."},
+        404: {"model": Error, "description": "Unsupported language."},
+    },
+)
+def patch_pronunciations(lang: str, req: PronunciationUpdate) -> JSONResponse:
+    """Merge into `pronunciations/<lang>.json` and apply to the running server, no restart.
+
+    Words match case-insensitively, so setting `gpu` replaces an existing `GPU`. `lang` is `en` or `ja`.
+    The response is the whole lexicon after the change.
+    """
     _check_lang(lang)
     try:
         lexicon = pronunciations.update(
