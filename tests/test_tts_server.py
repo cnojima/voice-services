@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import io
+import json
 
 import pytest
 import soundfile as sf
 from starlette.testclient import TestClient
 
 import voice_services.tts.server as tts_server
+from voice_services.tts import pronunciations
 from tests.fakes import SR, FakeInstance, make_voices
 from voice_services.config import TTSConfig
 from voice_services.tts.pool import TTSPool
@@ -144,6 +146,49 @@ def test_tts_respells_words_from_the_lexicon(client):
         FakeInstance.synthesize = orig
 
     assert seen == ["The ay pee eye is down.", "The api is down."]
+
+
+def _pron_client(client, tmp_path, token="s3cret"):
+    d = tmp_path / "pron"
+    d.mkdir()
+    (d / "en.json").write_text('{"API": "ay pee eye"}', encoding="utf-8")
+    client.app.state.pronunciations_dir = d
+    client.app.state.admin_token = token
+    client.app.state.pronunciations = pronunciations.load(d)
+    return d
+
+
+AUTH = {"Authorization": "Bearer s3cret"}
+
+
+def test_patch_pronunciations_updates_file_and_live_lexicon(client, tmp_path):
+    d = _pron_client(client, tmp_path)
+
+    r = client.patch("/pronunciations/en", json={"set": {"GPU": "jee pee you"}, "remove": ["API"]}, headers=AUTH)
+
+    assert r.status_code == 200 and r.json() == {"lang": "en", "entries": {"GPU": "jee pee you"}}
+    assert json.loads((d / "en.json").read_text(encoding="utf-8")) == {"GPU": "jee pee you"}
+    assert client.get("/pronunciations/en").json()["entries"] == {"GPU": "jee pee you"}
+    assert client.app.state.pronunciations["en"].apply("a GPU") == "a jee pee you"
+
+
+def test_patch_pronunciations_needs_the_token(client, tmp_path):
+    d = _pron_client(client, tmp_path)
+    body = {"set": {"GPU": "jee pee you"}}
+
+    assert client.patch("/pronunciations/en", json=body).status_code == 401
+    assert client.patch("/pronunciations/en", json=body, headers={"Authorization": "Bearer nope"}).status_code == 401
+    client.app.state.admin_token = ""
+    assert client.patch("/pronunciations/en", json=body, headers=AUTH).status_code == 403
+    assert json.loads((d / "en.json").read_text(encoding="utf-8")) == {"API": "ay pee eye"}
+
+
+def test_patch_pronunciations_validates_language_and_input(client, tmp_path):
+    _pron_client(client, tmp_path)
+
+    assert client.patch("/pronunciations/fr", json={"set": {"a": "b"}}, headers=AUTH).status_code == 404
+    assert client.patch("/pronunciations/en", json={"set": {"a": ""}}, headers=AUTH).status_code == 400
+    assert client.get("/pronunciations/fr").status_code == 404
 
 
 def test_tts_passes_sampling_overrides_to_the_instance(client):

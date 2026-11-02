@@ -86,6 +86,22 @@ Request: `{"name": "hutao"}`. Response 200: `{"voice": "hutao", "swapped": true}
 (`swapped` is `false` if it was already loaded). 404 if the name is not an
 available voice. Takes seconds when `swapped` is true.
 
+## `GET /pronunciations/{lang}`
+
+The live respelling lexicon for `en` or `ja`: `{"lang": "en", "entries": {"API": "ay pee eye"}}`.
+404 for any other language.
+
+## `PATCH /pronunciations/{lang}`
+
+Change `pronunciations/<lang>.json` and the running server's lexicon at once, with no restart.
+Needs `Authorization: Bearer <VOICE_TTS_ADMIN_TOKEN>`; with no token configured the endpoint
+answers 403, with a wrong one 401.
+
+Request (both fields optional): `{"set": {"GPU": "jee pee you"}, "remove": ["RAG"]}`.
+Words match case-insensitively, so setting `gpu` replaces an existing `GPU`. Response 200 is the
+whole lexicon after the change, shaped like `GET`. 400 for an empty word or spelling, or if the
+existing file is malformed (nothing is written). The file is replaced atomically.
+
 ## `POST /tts`
 
 Request (JSON):

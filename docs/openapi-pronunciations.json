@@ -1,0 +1,288 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "voice-services TTS: pronunciations",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/pronunciations/{lang}": {
+      "get": {
+        "tags": [
+          "pronunciations"
+        ],
+        "summary": "Read a respelling lexicon",
+        "operationId": "get_pronunciations_pronunciations__lang__get",
+        "parameters": [
+          {
+            "name": "lang",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Lang"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pronunciations"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unsupported language.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "pronunciations"
+        ],
+        "summary": "Add, replace or remove respellings",
+        "description": "Merge into `pronunciations/<lang>.json` and apply to the running server, no restart.\n\nWords match case-insensitively, so setting `gpu` replaces an existing `GPU`. `lang` is `en` or `ja`.\nThe response is the whole lexicon after the change.",
+        "operationId": "patch_pronunciations_pronunciations__lang__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lang",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Lang"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PronunciationUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pronunciations"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty word or spelling, or the existing file is malformed; nothing was written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Updates are disabled: the server has no VOICE_TTS_ADMIN_TOKEN.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unsupported language.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "Error"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PronunciationUpdate": {
+        "properties": {
+          "set": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Set",
+            "description": "Words to add or replace, word -> respelling.",
+            "examples": [
+              {
+                "GPU": "jee pee you"
+              }
+            ]
+          },
+          "remove": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Remove",
+            "description": "Words to drop.",
+            "examples": [
+              [
+                "RAG"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "title": "PronunciationUpdate"
+      },
+      "Pronunciations": {
+        "properties": {
+          "lang": {
+            "type": "string",
+            "title": "Lang"
+          },
+          "entries": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Entries",
+            "description": "The whole lexicon, word -> respelling."
+          }
+        },
+        "type": "object",
+        "required": [
+          "lang",
+          "entries"
+        ],
+        "title": "Pronunciations"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "description": "The server's VOICE_TTS_ADMIN_TOKEN.",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
