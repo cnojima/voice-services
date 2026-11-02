@@ -14,7 +14,7 @@ from io import BytesIO
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from voice_services import env
 from voice_services.config import TTSConfig
@@ -40,6 +40,13 @@ class TTSRequest(BaseModel):
     text: str
     text_lang: str
     voice: str
+    # Per-request sampling overrides; omitted = the backend's defaults.
+    temperature: float | None = Field(None, gt=0, le=2)
+    top_p: float | None = Field(None, gt=0, le=1)
+    top_k: int | None = Field(None, ge=1)
+
+    def sampling(self) -> dict:
+        return self.model_dump(include={"temperature", "top_p", "top_k"}, exclude_none=True)
 
 
 class VoiceRequest(BaseModel):
@@ -100,7 +107,7 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     if not stream:
         try:
             with lease:
-                wav, sr = lease.inst.synthesize(text, req.text_lang)
+                wav, sr = lease.inst.synthesize(text, req.text_lang, req.sampling())
         except Exception as e:  # noqa: BLE001 -- the lease already discarded a dead instance
             raise HTTPException(503, f"{type(e).__name__}: {e}") from e
         buf = BytesIO()
@@ -108,7 +115,7 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
         return Response(buf.getvalue(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
     try:
-        sr, chunks = lease.inst.stream_tts(text, req.text_lang)
+        sr, chunks = lease.inst.stream_tts(text, req.text_lang, req.sampling())
     except Exception as e:  # noqa: BLE001
         lease.release(e)
         raise HTTPException(503, f"{type(e).__name__}: {e}") from e

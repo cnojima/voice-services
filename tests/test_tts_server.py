@@ -136,7 +136,7 @@ def test_tts_respells_words_from_the_lexicon(client):
     client.app.state.pronunciations = {"en": Lexicon({"API": "ay pee eye"})}
     seen = []
     orig = FakeInstance.synthesize
-    FakeInstance.synthesize = lambda self, text, language: (seen.append(text), orig(self, text, language))[1]
+    FakeInstance.synthesize = lambda self, text, language, sampling=None: (seen.append(text), orig(self, text, language, sampling))[1]
     try:
         client.post("/tts", json={"text": "The api is down.", "text_lang": "en", "voice": "juliet"})
         client.post("/tts", json={"text": "The api is down.", "text_lang": "ja", "voice": "ayaka"})
@@ -144,3 +144,23 @@ def test_tts_respells_words_from_the_lexicon(client):
         FakeInstance.synthesize = orig
 
     assert seen == ["The ay pee eye is down.", "The api is down."]
+
+
+def test_tts_passes_sampling_overrides_to_the_instance(client):
+    body = {"text": "hi", "text_lang": "en", "voice": "juliet"}
+    client.post("/tts", json={**body, "temperature": 0.6, "top_p": 0.8, "top_k": 10})
+    inst = next(i for i in FakeInstance.created if i.voice_name == "juliet")
+    assert inst.sampling == {"temperature": 0.6, "top_p": 0.8, "top_k": 10}
+
+    client.post("/tts", params={"stream": "true"}, json={**body, "temperature": 0.5})
+    assert inst.sampling == {"temperature": 0.5}
+
+    client.post("/tts", json=body)
+    assert inst.sampling == {}
+
+
+@pytest.mark.parametrize("extra", [{"temperature": 0}, {"top_p": 1.5}, {"top_k": 0}])
+def test_tts_rejects_out_of_range_sampling(client, extra):
+    resp = client.post("/tts", json={"text": "hi", "text_lang": "en", "voice": "juliet", **extra})
+
+    assert resp.status_code == 422
