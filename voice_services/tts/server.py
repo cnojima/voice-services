@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from voice_services import env
 from voice_services.config import TTSConfig
-from voice_services.tts import pronunciations
+from voice_services.tts import pauses, pronunciations
 from voice_services.tts.pool import TTSPool, TTSUnavailable
 from voice_services.tts.voices import VoiceNotFoundError, default_weights_root, list_voices, load_voice
 
@@ -46,9 +46,11 @@ class TTSRequest(BaseModel):
     temperature: float | None = Field(None, gt=0, le=2)
     top_p: float | None = Field(None, gt=0, le=1)
     top_k: int | None = Field(None, ge=1)
+    # Silence between fragments, i.e. the pause at a comma, dash, colon or semicolon.
+    fragment_interval: float | None = Field(None, ge=0, le=5)
 
     def sampling(self) -> dict:
-        return self.model_dump(include={"temperature", "top_p", "top_k"}, exclude_none=True)
+        return self.model_dump(include={"temperature", "top_p", "top_k", "fragment_interval"}, exclude_none=True)
 
 
 class VoiceRequest(BaseModel):
@@ -174,12 +176,16 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     if req.text_lang not in TEXT_LANGUAGES:
         raise HTTPException(400, f"unsupported text_lang {req.text_lang!r}, expected one of {TEXT_LANGUAGES}")
 
-    text = _respell(req.text, req.text_lang)
+    text = pauses.apply(_respell(req.text, req.text_lang), req.text_lang)
+    sampling = req.sampling()
+    default_gap = getattr(app.state, "fragment_interval", None)
+    if default_gap is not None:
+        sampling.setdefault("fragment_interval", default_gap)
     lease = _acquire(req.voice)
     if not stream:
         try:
             with lease:
-                wav, sr = lease.inst.synthesize(text, req.text_lang, req.sampling())
+                wav, sr = lease.inst.synthesize(text, req.text_lang, sampling)
         except Exception as e:  # noqa: BLE001 -- the lease already discarded a dead instance
             raise HTTPException(503, f"{type(e).__name__}: {e}") from e
         buf = BytesIO()
@@ -187,7 +193,7 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
         return Response(buf.getvalue(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
     try:
-        sr, chunks = lease.inst.stream_tts(text, req.text_lang, req.sampling())
+        sr, chunks = lease.inst.stream_tts(text, req.text_lang, sampling)
     except Exception as e:  # noqa: BLE001
         lease.release(e)
         raise HTTPException(503, f"{type(e).__name__}: {e}") from e
@@ -245,6 +251,11 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as e:
         sys.exit(f"pronunciations: {e}")
     app.state.pronunciations_dir = pronunciations.default_dir()
+    gap = os.environ.get("VOICE_TTS_FRAGMENT_INTERVAL", "").strip()
+    try:
+        app.state.fragment_interval = float(gap) if gap else None
+    except ValueError:
+        sys.exit(f"VOICE_TTS_FRAGMENT_INTERVAL: not a number: {gap!r}")
     app.state.admin_token = os.environ.get("VOICE_TTS_ADMIN_TOKEN", "")
     app.state.preload = [v.strip() for v in args.preload.split(",") if v.strip()]
 
