@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
+import hmac
 import os
 import sys
 from contextlib import asynccontextmanager
 from io import BytesIO
 
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -53,9 +54,22 @@ class VoiceRequest(BaseModel):
     name: str
 
 
+class PronunciationUpdate(BaseModel):
+    set: dict[str, str] = Field(default_factory=dict)  # word -> respelling, added or replaced
+    remove: list[str] = Field(default_factory=list)  # words to drop
+
+
 def _respell(text: str, language: str) -> str:
     lexicon = getattr(app.state, "pronunciations", {}).get(language)
     return lexicon.apply(text) if lexicon else text
+
+
+def _require_admin(authorization: str | None) -> None:
+    token = getattr(app.state, "admin_token", "")
+    if not token:
+        raise HTTPException(403, "pronunciation updates are disabled: set VOICE_TTS_ADMIN_TOKEN")
+    if not hmac.compare_digest((authorization or "").encode(), f"Bearer {token}".encode()):
+        raise HTTPException(401, "missing or wrong bearer token", headers={"WWW-Authenticate": "Bearer"})
 
 
 def _pool() -> TTSPool:
@@ -93,6 +107,33 @@ def voices(language: str | None = None) -> JSONResponse:
 def set_voice(req: VoiceRequest) -> JSONResponse:
     with _acquire(req.name) as lease:
         return JSONResponse({"voice": req.name, "swapped": lease.swapped})
+
+
+def _check_lang(lang: str) -> None:
+    if lang not in TEXT_LANGUAGES:
+        raise HTTPException(404, f"unknown language {lang!r}, expected one of {TEXT_LANGUAGES}")
+
+
+@app.get("/pronunciations/{lang}")
+def get_pronunciations(lang: str) -> JSONResponse:
+    _check_lang(lang)
+    lexicon = getattr(app.state, "pronunciations", {}).get(lang)
+    return JSONResponse({"lang": lang, "entries": lexicon.entries if lexicon else {}})
+
+
+@app.patch("/pronunciations/{lang}")
+def patch_pronunciations(lang: str, req: PronunciationUpdate, authorization: str | None = Header(None)) -> JSONResponse:
+    """Merge into pronunciations/<lang>.json and apply to the running server, no restart."""
+    _require_admin(authorization)
+    _check_lang(lang)
+    try:
+        lexicon = pronunciations.update(
+            lang, req.set, req.remove, getattr(app.state, "pronunciations_dir", None)
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    app.state.pronunciations = {**getattr(app.state, "pronunciations", {}), lang: lexicon}
+    return JSONResponse({"lang": lang, "entries": lexicon.entries})
 
 
 @app.post("/tts")
@@ -172,6 +213,8 @@ def main(argv: list[str] | None = None) -> None:
         app.state.pronunciations = pronunciations.load()
     except ValueError as e:
         sys.exit(f"pronunciations: {e}")
+    app.state.pronunciations_dir = pronunciations.default_dir()
+    app.state.admin_token = os.environ.get("VOICE_TTS_ADMIN_TOKEN", "")
     app.state.preload = [v.strip() for v in args.preload.split(",") if v.strip()]
 
     for stream in (sys.stdout, sys.stderr):
