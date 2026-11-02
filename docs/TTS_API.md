@@ -114,8 +114,11 @@ Request (JSON):
 | `temperature` | no | Sampling temperature, `0 < x <= 2`. Default `1`. |
 | `top_p` | no | Nucleus sampling, `0 < x <= 1`. Default `1`. |
 | `top_k` | no | Top-k sampling, integer `>= 1`. Default: GPT-SoVITS's own. |
+| `fragment_interval` | no | Seconds of silence at each pause, `0 <= x <= 5`. Default: `VOICE_TTS_FRAGMENT_INTERVAL`, else GPT-SoVITS's `0.3`. |
 
 The sampling fields apply to that request only, so a client can vary them per turn.
+
+Pauses: GPT-SoVITS cuts the text at commas, full stops and similar, and puts `fragment_interval` of silence between the pieces. The server first rewrites em/en dashes (`—`, `–`, `--`), colons and semicolons into commas so they pause too. Colons inside times, ratios and `://` are left alone.
 
 `voice` is required: with a pool there is no meaningful "current voice".
 
