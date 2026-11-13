@@ -209,3 +209,28 @@ def test_tts_rejects_out_of_range_sampling(client, extra):
     resp = client.post("/tts", json={"text": "hi", "text_lang": "en", "voice": "juliet", **extra})
 
     assert resp.status_code == 422
+
+
+def test_tts_turns_dashes_colons_and_semicolons_into_pauses(client):
+    seen = []
+    orig = FakeInstance.synthesize
+    FakeInstance.synthesize = lambda self, text, language, sampling=None: (seen.append(text), orig(self, text, language, sampling))[1]
+    try:
+        client.post("/tts", json={"text": "Wait — what: now; go.", "text_lang": "en", "voice": "juliet"})
+    finally:
+        FakeInstance.synthesize = orig
+    assert seen == ["Wait, what, now, go."]
+
+
+def test_tts_fragment_interval_request_value_beats_the_server_default(client):
+    body = {"text": "hi", "text_lang": "en", "voice": "juliet"}
+    client.app.state.fragment_interval = 0.6
+    try:
+        client.post("/tts", json=body)
+        inst = next(i for i in FakeInstance.created if i.voice_name == "juliet")
+        assert inst.sampling == {"fragment_interval": 0.6}
+        client.post("/tts", json={**body, "fragment_interval": 0.1})
+        assert inst.sampling == {"fragment_interval": 0.1}
+        assert client.post("/tts", json={**body, "fragment_interval": -1}).status_code == 422
+    finally:
+        client.app.state.fragment_interval = None
