@@ -169,7 +169,7 @@ class UpstreamInstance:
 
     def synthesize(self, text: str, language: str, sampling: dict | None = None) -> tuple[np.ndarray, int]:
         """Synthesize `text` (language `language`) in the current voice. `sampling` overrides
-        temperature/top_p/top_k/fragment_interval for this call only (see _tts_payload). Raises on any
+        temperature/top_p/top_k/fragment_interval/speed_factor for this call only (see _tts_payload). Raises on any
         request/decode failure. Retries on an implausibly short result (see
         min_plausible_duration_s) before giving up and returning it anyway."""
         floor_s = min_plausible_duration_s(text)
@@ -189,7 +189,7 @@ class UpstreamInstance:
 
     def _tts_payload(self, text: str, language: str, sampling: dict | None = None) -> dict:
         # prompt_lang is the reference clip's own language (fixed per voice); text_lang is the
-        # language of the text being spoken. `sampling` may carry temperature, top_p, top_k and fragment_interval;
+        # language of the text being spoken. `sampling` may carry temperature, top_p, top_k, fragment_interval and speed_factor;
         # anything it omits keeps the default (top_k: upstream's own).
         return {
             "text": text,

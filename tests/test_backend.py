@@ -78,11 +78,12 @@ def test_sampling_overrides_reach_the_upstream_payload_and_default_otherwise(tmp
     inst.start("ayaka")
 
     inst.synthesize("hello", "ja")
-    inst.synthesize("hello", "ja", {"temperature": 0.5, "top_k": 7})
+    inst.synthesize("hello", "ja", {"temperature": 0.5, "top_k": 7, "speed_factor": 1.3})
 
     default, tuned = [json.loads(r.content) for r in fake.requests if r.url.path == "/tts"][-2:]
     assert (default["temperature"], default["top_p"], "top_k" in default) == (1, 1, False)
     assert (tuned["temperature"], tuned["top_p"], tuned["top_k"]) == (0.5, 1, 7)
+    assert tuned["speed_factor"] == 1.3 and "speed_factor" not in default
 
 
 def test_start_attaches_to_a_running_upstream_and_loads_the_voice(tmp_path):

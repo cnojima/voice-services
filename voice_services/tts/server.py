@@ -48,9 +48,13 @@ class TTSRequest(BaseModel):
     top_k: int | None = Field(None, ge=1)
     # Silence between fragments, i.e. the pause at a comma, dash, colon or semicolon.
     fragment_interval: float | None = Field(None, ge=0, le=5)
+    # Playback tempo (>1 faster, <1 slower), applied by GPT-SoVITS at inference.
+    speed_factor: float | None = Field(None, ge=0.5, le=2)
 
     def sampling(self) -> dict:
-        return self.model_dump(include={"temperature", "top_p", "top_k", "fragment_interval"}, exclude_none=True)
+        return self.model_dump(
+            include={"temperature", "top_p", "top_k", "fragment_interval", "speed_factor"}, exclude_none=True
+        )
 
 
 class VoiceRequest(BaseModel):
