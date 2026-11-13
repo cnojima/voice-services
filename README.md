@@ -46,6 +46,21 @@ The scripts use `.venv` in this repo (or the python in `VOICE_SERVICES_PYTHON`),
 (pool size, preloaded and pinned voices: `VOICE_TTS_POOL_SIZE`, `VOICE_TTS_PRELOAD`, `VOICE_TTS_PIN`), and pass extra arguments through.
 Stop the Windows TTS window with Ctrl+C: closing it can leave the `api_v2.py` processes running.
 
+## Running as Windows services (NSSM)
+
+For an unattended machine: both services start at boot, restart on crash, and log to `logs/voice-stt.log` / `logs/voice-tts.log` (rotated).
+
+```
+winget install NSSM.NSSM                 # once; open a new prompt afterwards
+install-services.bat                     # elevated prompt; re-run to reinstall
+services.bat start                       # start | stop | restart | status   [stt|tts|all]
+uninstall-services.bat                   # elevated prompt
+```
+
+`services.bat` works over SSH (an admin account's session is elevated; `status` needs no rights and also curls each service's `GET /`).
+Settings still come from `.env`; restart the service after editing it. Services run as LocalSystem by default; if that can't see your
+caches or paths, install with `install-services.bat .\youruser yourpassword`. Don't run the `start-*.bat` windows and the services at the same time (same ports).
+
 ## TTS needs more than this repo
 
 TTS drives upstream GPT-SoVITS's own `api_v2.py`, in its own CUDA venv (`<VOICE_GPT_SOVITS_ROOT>/runtime`) with the
