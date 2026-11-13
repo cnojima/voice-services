@@ -114,8 +114,9 @@ Request (JSON):
 | `temperature` | no | Sampling temperature, `0 < x <= 2`. Default `1`. |
 | `top_p` | no | Nucleus sampling, `0 < x <= 1`. Default `1`. |
 | `top_k` | no | Top-k sampling, integer `>= 1`. Default: GPT-SoVITS's own. |
+| `speed_factor` | no | Speaking tempo, `0.5 <= x <= 2`; above 1 is faster. Default `1`. Extreme values degrade quality. |
 
-The sampling fields apply to that request only, so a client can vary them per turn.
+The sampling fields (and `speed_factor`) apply to that request only, so a client can vary them per turn.
 
 `voice` is required: with a pool there is no meaningful "current voice".
 

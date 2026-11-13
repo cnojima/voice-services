@@ -46,9 +46,11 @@ class TTSRequest(BaseModel):
     temperature: float | None = Field(None, gt=0, le=2)
     top_p: float | None = Field(None, gt=0, le=1)
     top_k: int | None = Field(None, ge=1)
+    # Playback tempo (>1 faster, <1 slower), applied by GPT-SoVITS at inference.
+    speed_factor: float | None = Field(None, ge=0.5, le=2)
 
     def sampling(self) -> dict:
-        return self.model_dump(include={"temperature", "top_p", "top_k"}, exclude_none=True)
+        return self.model_dump(include={"temperature", "top_p", "top_k", "speed_factor"}, exclude_none=True)
 
 
 class VoiceRequest(BaseModel):

@@ -193,9 +193,9 @@ def test_patch_pronunciations_validates_language_and_input(client, tmp_path):
 
 def test_tts_passes_sampling_overrides_to_the_instance(client):
     body = {"text": "hi", "text_lang": "en", "voice": "juliet"}
-    client.post("/tts", json={**body, "temperature": 0.6, "top_p": 0.8, "top_k": 10})
+    client.post("/tts", json={**body, "temperature": 0.6, "top_p": 0.8, "top_k": 10, "speed_factor": 1.2})
     inst = next(i for i in FakeInstance.created if i.voice_name == "juliet")
-    assert inst.sampling == {"temperature": 0.6, "top_p": 0.8, "top_k": 10}
+    assert inst.sampling == {"temperature": 0.6, "top_p": 0.8, "top_k": 10, "speed_factor": 1.2}
 
     client.post("/tts", params={"stream": "true"}, json={**body, "temperature": 0.5})
     assert inst.sampling == {"temperature": 0.5}
@@ -204,7 +204,7 @@ def test_tts_passes_sampling_overrides_to_the_instance(client):
     assert inst.sampling == {}
 
 
-@pytest.mark.parametrize("extra", [{"temperature": 0}, {"top_p": 1.5}, {"top_k": 0}])
+@pytest.mark.parametrize("extra", [{"temperature": 0}, {"top_p": 1.5}, {"top_k": 0}, {"speed_factor": 0.2}, {"speed_factor": 3}])
 def test_tts_rejects_out_of_range_sampling(client, extra):
     resp = client.post("/tts", json={"text": "hi", "text_lang": "en", "voice": "juliet", **extra})
 
