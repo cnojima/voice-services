@@ -48,6 +48,16 @@ def main() -> int:
     voices = list_voices(weights)
     check(bool(voices), f"{len(voices)} voice(s) in {weights}: {', '.join(voices)}", f"no voices (voice.json) under {weights}; run scripts/fetch_weights.py")
 
+    from voice_services.tts.kokoro import KokoroEngine
+
+    kokoro = KokoroEngine()  # optional: a missing one is reported, not counted as a problem
+    if kokoro.available:
+        print(f"ok      Kokoro voices: {', '.join(kokoro.voices())}")
+        for lang, why in kokoro.errors.items():
+            print(f"off     Kokoro cannot speak {lang} (no fallback or {lang} voice from it): {' '.join(why.split())[:120]}")
+    else:
+        print(f"off     Kokoro (optional; French, Italian and fallback voices): {' '.join(kokoro.error.split())[:120]}")
+
     print("\nAll good." if not problems else f"\n{len(problems)} problem(s).")
     return 1 if problems else 0
 

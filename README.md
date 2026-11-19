@@ -17,8 +17,9 @@ No authentication: bind to localhost or a Tailscale interface only (`--host` / `
 2. `pip install -e ".[dev,weights]"`
 3. Copy `.env.example` to `.env` and set `VOICE_GPT_SOVITS_ROOT` (and `VOICE_WEIGHTS_ROOT`, `VOICE_FFMPEG_BIN` if needed).
 4. `python scripts/fetch_weights.py` for the voice weights (needs `hf auth login`).
-5. `python scripts/check_setup.py` says what is still missing.
-6. `pytest`
+5. Optional, for French and Italian voices and the TTS fallback: `pip install -e ".[kokoro]"` (needs Python 3.12 or older and espeak-ng; see "Default engine: Kokoro" in `docs/TTS_API.md`).
+6. `python scripts/check_setup.py` says what is still missing.
+7. `pytest`
 
 ```
 py -3.12 -m venv .venv
@@ -66,6 +67,13 @@ caches or paths, install with `install-services.bat .\youruser yourpassword`. Do
 TTS drives upstream GPT-SoVITS's own `api_v2.py`, in its own CUDA venv (`<VOICE_GPT_SOVITS_ROOT>/runtime`) with the
 pretrained base models. This repo does not install that checkout. Each pool instance is one such process on
 `VOICE_TTS_UPSTREAM_PORT` + its index, holding one voice; see the contract for how requests are routed.
+
+## Kokoro voices (French, Italian, fallback)
+
+`pip install -e ".[kokoro]"` adds [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) voices that run inside the TTS server (no pool slot):
+`ff_siwis` (French), `if_sara` (Italian), and English and Japanese ones that answer when a GPT-SoVITS voice cannot.
+They need espeak-ng (the copy pip bundles crashes on macOS: set `VOICE_ESPEAK_LIBRARY` and `VOICE_ESPEAK_DATA`) and, for Japanese,
+the unidic dictionary (`python -m unidic download`). The server logs the voices it can speak at start-up. Details: `docs/TTS_API.md`.
 
 ## Status
 
