@@ -1,6 +1,6 @@
 # TTS API
 
-GPT-SoVITS fine-tuned character voices over HTTP. Default
+GPT-SoVITS fine-tuned character voices over HTTP, plus Kokoro voices (see "Default engine: Kokoro" below) for French and Italian and as a fallback. Default
 `http://127.0.0.1:8772` (`python -m voice_services.tts`).
 
 **This contract is new.** Nothing in the `voice` project speaks it yet: that
@@ -65,17 +65,24 @@ that needs it. A failed preload still sets `ready` to `true`, so check `status`.
 ## `GET /voices`
 
 Voices available on disk. Optional `?language=ja` keeps only voices whose
-reference clip is in that language. `loaded` lists the voices currently held by
-an instance (the ones that will answer without a swap). `pinned` lists the `--pin`
+reference clip is in that language. `loaded` lists the GPT-SoVITS voices currently held by
+an instance (the ones that will answer without a swap); Kokoro voices answer at once and are never in it. `pinned` lists the `--pin`
 voices, which are never swapped out (empty when none).
 
 ```json
 {
   "loaded": ["ayaka", "rosamund"],
   "pinned": ["rosamund"],
-  "voices": [{"name": "ayaka", "ref_lang": "ja", "version": "v2"}]
+  "voices": [
+    {"name": "ayaka", "ref_lang": "ja", "version": "v2", "engine": "gpt-sovits"},
+    {"name": "ff_siwis", "ref_lang": "fr", "version": null, "engine": "kokoro"}
+  ]
 }
 ```
+
+Each voice has an `engine`: `"gpt-sovits"` (a voice directory) or `"kokoro"` (the built-in catalogue; listed only for the
+languages that loaded, and not at all when Kokoro is off). Voice directories come first. A client that wants a cloned voice
+over a stock one for a language prefers `gpt-sovits`.
 
 ## `POST /voice`
 
@@ -83,12 +90,12 @@ Ensure a voice is loaded in some instance, swapping the least recently used
 unpinned one if needed. Use it to warm a voice ahead of the first `/tts`.
 
 Request: `{"name": "hutao"}`. Response 200: `{"voice": "hutao", "swapped": true}`
-(`swapped` is `false` if it was already loaded). 404 if the name is not an
-available voice. Takes seconds when `swapped` is true.
+(`swapped` is `false` if it was already loaded; always `false` for a Kokoro voice). 404 if the name is not an
+available voice, or is a Kokoro voice that this server cannot speak (the message says why). Takes seconds when `swapped` is true.
 
 ## `GET /pronunciations/{lang}`
 
-The live respelling lexicon for `en` or `ja`: `{"lang": "en", "entries": {"API": "ay pee eye"}}`.
+The live respelling lexicon for `ja`, `en`, `fr` or `it`: `{"lang": "en", "entries": {"API": "ay pee eye"}}`.
 404 for any other language.
 
 ## `PATCH /pronunciations/{lang}`
@@ -109,7 +116,7 @@ Request (JSON):
 | field | required | meaning |
 |---|---|---|
 | `text` | yes | Text to speak. |
-| `text_lang` | yes | Language of `text` (`ja`, `en`). Not the reference clip's language, which is fixed per voice. |
+| `text_lang` | yes | Language of `text` (`ja`, `en`, `fr`, `it`). Not the reference clip's language, which is fixed per voice. |
 | `voice` | yes | Voice name. Routed as described under "Voices and the pool". |
 | `temperature` | no | Sampling temperature, `0 < x <= 2`. Default `1`. |
 | `top_p` | no | Nucleus sampling, `0 < x <= 1`. Default `1`. |
@@ -117,7 +124,7 @@ Request (JSON):
 | `speed_factor` | no | Speaking tempo, `0.5 <= x <= 2`; above 1 is faster. Default `1`. Extreme values degrade quality. |
 | `fragment_interval` | no | Seconds of silence at each pause, `0 <= x <= 5`. Default: `VOICE_TTS_FRAGMENT_INTERVAL`, else GPT-SoVITS's `0.3`. |
 
-The sampling fields (and `speed_factor`) apply to that request only, so a client can vary them per turn.
+The sampling fields (and `speed_factor`) apply to that request only, so a client can vary them per turn. A Kokoro voice honours `speed_factor` and ignores the rest (never an error).
 
 Pauses: GPT-SoVITS cuts the text at commas, full stops and similar, and puts `fragment_interval` of silence between the pieces. The server first rewrites em/en dashes (`—`, `–`, `--`), colons and semicolons into commas so they pause too. Colons inside times, ratios and `://` are left alone.
 
@@ -149,11 +156,37 @@ byte is sent):
 
 | status | when |
 |---|---|
-| 400 | empty `text`, or unsupported `text_lang` |
-| 404 | unknown `voice` |
+| 400 | empty `text`, unsupported `text_lang`, or a GPT-SoVITS voice asked to speak `fr` or `it` (Kokoro's languages for now) |
+| 404 | unknown `voice`; or a Kokoro voice on a server where Kokoro is off or cannot speak its language (`detail` says why) |
 | 422 | malformed body |
-| 503 | no instance could serve the request (not ready, crashed, or failed to start); `detail` carries the reason |
+| 503 | no instance could serve the request (not ready, crashed, or failed to start), and no Kokoro fallback applied; `detail` carries the reason |
+
+**Fallback.** When a GPT-SoVITS voice would answer 503 before any audio is sent (for a streamed request, before the stream's header arrives), the server instead
+speaks Kokoro's voice for `text_lang` and answers 200 with `X-Fallback-Voice: <kokoro voice>` and `X-Fallback-From: <requested voice>`;
+each fallback is logged. There is no fallback for 400, 404 or 422, for a Kokoro voice that fails, or for a language Kokoro cannot speak
+(the original 503 stands); if Kokoro fails too, the 503 names both errors. A fallback uses no pool instance, so a pinned voice stays loaded.
 
 If an upstream process dies mid-stream, the connection is closed without a
 clean end; clients should treat a truncated stream as a failure. A crashed
 instance is restarted on the next request that needs it.
+
+## Default engine: Kokoro
+
+Voices that are not trained GPT-SoVITS clones come from [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), run in-process (no subprocess, no pool slot). Spike findings (2026-11-18, Apple silicon CPU):
+
+| | |
+|---|---|
+| Packages | `kokoro` 0.9.4, `misaki[ja]` 0.9.4, torch 2.15, Python 3.12 (`kokoro` supports 3.12 and older). Weights download from Hugging Face on first use. |
+| Speed | About 10x real time on CPU (a 3 s phrase in 0.2 to 0.4 s after the first). |
+| Output | 24 kHz mono float32. |
+| French | `ff_siwis` (chosen). All 20 phrases in `tests/fixtures/phrases.json` synthesize. |
+| Italian | `if_sara` (chosen); `im_nicola` is the male alternative (`if_nicola` does not exist). All 20 phrases synthesize. |
+| English | `af_heart` (placeholder fallback); `af_bella`, `am_michael` also tried. |
+| Japanese | `jf_alpha` (placeholder fallback), **not run**: it needs the `unidic` dictionary (`python -m unidic download`, about 500 MB). |
+
+Kokoro is off unless `pip install .[kokoro]` has been done; the server then lists no Kokoro voices and has no fallback. It loads the model
+at startup (a first start downloads about 330 MB from Hugging Face) and logs which voices it can speak and why any language cannot.
+
+**Needs espeak-ng for French and Italian (and English out-of-vocabulary words).** The espeak that pip bundles (`espeakng-loader`) has its build machine's data path baked in and crashes on macOS (`Error processing file '/Users/runner/...phontab'`). Install espeak-ng (`brew install espeak-ng`, or the distro package) and set `VOICE_ESPEAK_LIBRARY` and `VOICE_ESPEAK_DATA` to its library and `espeak-ng-data` directory; the server applies them after misaki's import.
+
+**Listening check: not done.** Generate the samples with `python scripts/kokoro_samples.py` (writes `samples/<lang>/<voice>/<nn>.wav`) and have a fluent listener score `ff_siwis` and `if_sara` on the phrases (digits, dates, liaisons, double consonants, loanwords). Record the verdict here. If a voice fails, pick another Kokoro voice for that language.

@@ -11,6 +11,10 @@ from voice_services.tts import pauses
     ("Items 3: 1:2 ratio", "en", "Items 3, 1:2 ratio"),
     ("待って―はい：行く；今", "ja", "待って、はい、行く、今"),
     ("no marks, here.", "en", "no marks, here."),
+    ("Il est 10:30 : voilà !", "fr", "Il est 10:30, voilà !"),
+    ("Il dit « bonjour » à tous.", "fr", "Il dit bonjour à tous."),
+    ("Attention ; c'est chaud — vraiment ?", "fr", "Attention, c'est chaud, vraiment ?"),
+    ("L'uomo c'è; va via: subito", "it", "L'uomo c'è, va via, subito"),
 ])
 def test_pauses_become_commas(text, lang, expected):
     assert pauses.apply(text, lang) == expected

@@ -71,3 +71,40 @@ class FakeInstance:
     @classmethod
     def reset(cls):
         cls.created, cls.fail_start = [], set()
+
+
+class FakeKokoro:
+    """A stand-in for KokoroEngine: records what the server asked of it."""
+
+    def __init__(self, available=True, error=None, fail=False, languages=("en", "ja", "fr", "it"), errors=None):
+        self.available, self.error, self.fail = available, error, fail
+        self.languages, self.errors = languages, errors or {}
+        self.calls: list[tuple] = []
+
+    def voices(self):
+        from voice_services.tts.kokoro import KOKORO_VOICES
+
+        return {n: lang for n, lang in KOKORO_VOICES.items() if lang in self.languages}
+
+    def voice_for(self, language):
+        return next((n for n, lang in self.voices().items() if lang == language), None)
+
+    def synthesize(self, text, voice, sampling=None):
+        self.calls.append(("synth", voice, text, sampling))
+        if self.fail:
+            raise RuntimeError("kokoro failed")
+        return np.zeros(24000, dtype=np.float32), 24000
+
+    def stream_tts(self, text, voice, sampling=None):
+        self.calls.append(("stream", voice, text, sampling))
+        if self.fail:
+            raise RuntimeError("kokoro failed")
+
+        class Chunks:
+            def __iter__(self):
+                yield b"\x03\x00" * 50
+
+            def close(self):
+                pass
+
+        return 24000, Chunks()

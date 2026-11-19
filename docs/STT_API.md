@@ -31,7 +31,8 @@ down; the server does not. Length must be a multiple of 4 bytes.
 | `candidates` | Comma-separated languages to detect among, used only when `language` is absent. Whisper's own detector wanders on short accented clips, so detection is restricted to this set. |
 
 Neither given: detects among the server's configured languages
-(`--languages`, default `en,ja`).
+(`--languages` or `VOICE_STT_LANGUAGES`, default `en,ja`; set `en,ja,fr,it` to detect French and Italian
+without a client naming them. Whisper itself handles all four; only this default set is limited.)
 
 **Response 200**
 

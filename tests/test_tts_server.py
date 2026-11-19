@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 import voice_services.tts.server as tts_server
 from voice_services.tts import pronunciations
-from tests.fakes import SR, FakeInstance, make_voices
+from tests.fakes import SR, FakeInstance, FakeKokoro, make_voices
 from voice_services.config import TTSConfig
 from voice_services.tts.pool import TTSPool
 
@@ -21,8 +21,17 @@ def client(tmp_path):
     make_voices(tmp_path, "ayaka", "juliet", juliet={"ref_lang": "en", "version": "v2Pro"})
     tts_server.app.state.pool = TTSPool(TTSConfig(weights_root=str(tmp_path)), size=2, base_port=9100, factory=FakeInstance)
     tts_server.app.state.preload = []
+    tts_server.app.state.kokoro = None
     with TestClient(tts_server.app) as c:
         yield c
+    tts_server.app.state.kokoro = None
+
+
+@pytest.fixture
+def kokoro(client):
+    """The same server with a (fake) Kokoro engine."""
+    tts_server.app.state.kokoro = FakeKokoro()
+    return tts_server.app.state.kokoro
 
 
 def test_health_lists_instances(client):
@@ -39,8 +48,8 @@ def test_voices_lists_available_and_loaded(client):
 
     assert body["loaded"] == ["ayaka"]
     assert body["voices"] == [
-        {"name": "ayaka", "ref_lang": "ja", "version": "v2"},
-        {"name": "juliet", "ref_lang": "en", "version": "v2Pro"},
+        {"name": "ayaka", "ref_lang": "ja", "version": "v2", "engine": "gpt-sovits"},
+        {"name": "juliet", "ref_lang": "en", "version": "v2Pro", "engine": "gpt-sovits"},
     ]
     assert [v["name"] for v in client.get("/voices", params={"language": "en"}).json()["voices"]] == ["juliet"]
 
@@ -110,7 +119,7 @@ def test_the_instance_is_released_after_a_streamed_response(client):
     "body,status",
     [
         ({"text": "  ", "text_lang": "ja", "voice": "ayaka"}, 400),
-        ({"text": "hi", "text_lang": "fr", "voice": "ayaka"}, 400),
+        ({"text": "hi", "text_lang": "de", "voice": "ayaka"}, 400),
         ({"text": "hi", "text_lang": "ja", "voice": "nobody"}, 404),
         ({"text": "hi", "text_lang": "ja"}, 422),  # voice is required
     ],
@@ -186,9 +195,9 @@ def test_patch_pronunciations_needs_the_token(client, tmp_path):
 def test_patch_pronunciations_validates_language_and_input(client, tmp_path):
     _pron_client(client, tmp_path)
 
-    assert client.patch("/pronunciations/fr", json={"set": {"a": "b"}}, headers=AUTH).status_code == 404
+    assert client.patch("/pronunciations/de", json={"set": {"a": "b"}}, headers=AUTH).status_code == 404
     assert client.patch("/pronunciations/en", json={"set": {"a": ""}}, headers=AUTH).status_code == 400
-    assert client.get("/pronunciations/fr").status_code == 404
+    assert client.get("/pronunciations/de").status_code == 404
 
 
 def test_tts_passes_sampling_overrides_to_the_instance(client):
@@ -234,3 +243,211 @@ def test_tts_fragment_interval_request_value_beats_the_server_default(client):
         assert client.post("/tts", json={**body, "fragment_interval": -1}).status_code == 422
     finally:
         client.app.state.fragment_interval = None
+
+
+def test_voices_lists_kokoro_voices_with_their_engine(client, kokoro):
+    body = client.get("/voices").json()
+
+    assert {"name": "ff_siwis", "ref_lang": "fr", "version": None, "engine": "kokoro"} in body["voices"]
+    assert {"name": "if_sara", "ref_lang": "it", "version": None, "engine": "kokoro"} in body["voices"]
+    assert body["voices"][0]["engine"] == "gpt-sovits"  # the voice directories come first
+    assert body["loaded"] == []  # `loaded` is the pool's: Kokoro voices never need loading
+    assert [v["name"] for v in client.get("/voices", params={"language": "fr"}).json()["voices"]] == ["ff_siwis"]
+
+
+def test_voices_has_no_kokoro_voices_when_the_engine_is_missing_or_unavailable(client):
+    assert all(v["engine"] == "gpt-sovits" for v in client.get("/voices").json()["voices"])
+    tts_server.app.state.kokoro = FakeKokoro(available=False, error="ImportError: no kokoro")
+    assert all(v["engine"] == "gpt-sovits" for v in client.get("/voices").json()["voices"])
+
+
+@pytest.mark.parametrize("lang, voice", [("fr", "ff_siwis"), ("it", "if_sara")])
+def test_tts_routes_a_kokoro_voice_to_kokoro_not_the_pool(client, kokoro, lang, voice):
+    resp = client.post("/tts", json={"text": "Bonjour.", "text_lang": lang, "voice": voice})
+
+    assert resp.status_code == 200 and resp.headers["X-Sample-Rate"] == "24000"
+    data, sr = sf.read(io.BytesIO(resp.content))
+    assert sr == 24000 and len(data) == 24000
+    assert kokoro.calls[0][:3] == ("synth", voice, "Bonjour.")
+    assert FakeInstance.created == []  # the pool was never touched
+    assert client.get("/").json()["instances"][0]["voice"] is None
+
+
+def test_tts_streams_a_kokoro_voice(client, kokoro):
+    resp = client.post("/tts", params={"stream": "true"}, json={"text": "Ciao.", "text_lang": "it", "voice": "if_sara"})
+
+    assert resp.status_code == 200 and resp.headers["X-Sample-Rate"] == "24000"
+    assert resp.content == b"\x03\x00" * 50
+    assert FakeInstance.created == []
+
+
+def test_tts_accepts_fr_and_it_for_kokoro_and_still_400s_for_de(client, kokoro):
+    for lang, voice in (("fr", "ff_siwis"), ("it", "if_sara")):
+        assert client.post("/tts", json={"text": "x", "text_lang": lang, "voice": voice}).status_code == 200
+    resp = client.post("/tts", json={"text": "x", "text_lang": "de", "voice": "ff_siwis"})
+    assert resp.status_code == 400 and "ja" in resp.json()["detail"] and "fr" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("lang", ["fr", "it"])
+def test_a_gpt_sovits_voice_cannot_speak_fr_or_it_and_nothing_is_swapped(client, kokoro, lang):
+    resp = client.post("/tts", json={"text": "x", "text_lang": lang, "voice": "ayaka"})
+
+    assert resp.status_code == 400 and "ayaka" in resp.json()["detail"] and lang in resp.json()["detail"]
+    assert FakeInstance.created == [] and kokoro.calls == []  # no swap, and no fallback hiding it
+
+
+def test_tts_kokoro_ignores_sampling_except_speed(client, kokoro):
+    resp = client.post("/tts", json={
+        "text": "Bonjour.", "text_lang": "fr", "voice": "ff_siwis",
+        "temperature": 0.5, "top_p": 0.9, "top_k": 5, "fragment_interval": 1.0, "speed_factor": 1.5,
+    })
+
+    assert resp.status_code == 200
+    assert kokoro.calls[0][3]["speed_factor"] == 1.5  # the engine reads only this; the rest it is free to drop
+
+
+def test_set_voice_for_a_kokoro_voice_is_not_swapped(client, kokoro):
+    resp = client.post("/voice", json={"name": "ff_siwis"})
+
+    assert resp.status_code == 200 and resp.json() == {"voice": "ff_siwis", "swapped": False}
+    assert FakeInstance.created == []
+
+
+def test_a_kokoro_voice_is_404_when_kokoro_is_unavailable(client):
+    tts_server.app.state.kokoro = FakeKokoro(available=False, error="ImportError: no kokoro")
+
+    for call in (
+        lambda: client.post("/tts", json={"text": "x", "text_lang": "fr", "voice": "ff_siwis"}),
+        lambda: client.post("/voice", json={"name": "ff_siwis"}),
+    ):
+        resp = call()
+        assert resp.status_code == 404 and "no kokoro" in resp.json()["detail"]
+
+
+def test_a_kokoro_voice_is_404_when_there_is_no_engine_at_all(client):
+    resp = client.post("/tts", json={"text": "x", "text_lang": "fr", "voice": "ff_siwis"})
+
+    assert resp.status_code == 404 and "Kokoro" in resp.json()["detail"]
+
+
+def test_a_kokoro_failure_is_503(client, kokoro):
+    kokoro.fail = True
+
+    resp = client.post("/tts", json={"text": "x", "text_lang": "fr", "voice": "ff_siwis"})
+
+    assert resp.status_code == 503 and "kokoro failed" in resp.json()["detail"]
+
+
+def test_pronunciations_cover_fr_and_it(client, tmp_path):
+    d = _pron_client(client, tmp_path)
+
+    for lang in ("fr", "it"):
+        assert client.get(f"/pronunciations/{lang}").json() == {"lang": lang, "entries": {}}
+    r = client.patch("/pronunciations/fr", json={"set": {"GPU": "gé pé u"}}, headers=AUTH)
+    assert r.status_code == 200 and json.loads((d / "fr.json").read_text(encoding="utf-8")) == {"GPU": "gé pé u"}
+
+
+def test_a_language_kokoro_could_not_load_is_not_listed_and_its_voice_is_404(client):
+    tts_server.app.state.kokoro = FakeKokoro(languages=("fr", "it"), errors={"ja": "Failed initializing MeCab"})
+
+    names = [v["name"] for v in client.get("/voices").json()["voices"] if v["engine"] == "kokoro"]
+    resp = client.post("/tts", json={"text": "x", "text_lang": "ja", "voice": "jf_alpha"})
+
+    assert names == ["ff_siwis", "if_sara"]
+    assert resp.status_code == 404 and "MeCab" in resp.json()["detail"]
+
+
+# -- fallback to Kokoro -------------------------------------------------------------------------------
+
+
+def test_pool_503_falls_back_to_kokoro_with_headers(client, kokoro):
+    FakeInstance.fail_start = {"ayaka"}
+
+    resp = client.post("/tts", json={"text": "こんにちは", "text_lang": "ja", "voice": "ayaka"})
+
+    assert resp.status_code == 200 and resp.headers["X-Sample-Rate"] == "24000"
+    assert resp.headers["X-Fallback-Voice"] == "jf_alpha" and resp.headers["X-Fallback-From"] == "ayaka"
+    assert kokoro.calls[0][:3] == ("synth", "jf_alpha", "こんにちは")
+
+
+def test_a_streaming_start_failure_falls_back_too(client, kokoro):
+    FakeInstance.fail_start = {"juliet"}
+
+    resp = client.post("/tts", params={"stream": "true"}, json={"text": "Hello.", "text_lang": "en", "voice": "juliet"})
+
+    assert resp.status_code == 200 and resp.content == b"\x03\x00" * 50
+    assert resp.headers["X-Fallback-Voice"] == "af_heart" and resp.headers["X-Fallback-From"] == "juliet"
+    assert kokoro.calls[0][0] == "stream"
+
+
+def test_the_fallback_voice_follows_text_lang_not_the_requested_voice(client, kokoro):
+    FakeInstance.fail_start = {"ayaka"}
+
+    resp = client.post("/tts", json={"text": "Hello.", "text_lang": "en", "voice": "ayaka"})
+
+    assert resp.headers["X-Fallback-Voice"] == "af_heart"
+
+
+def test_no_fallback_for_a_language_kokoro_lacks(client):
+    tts_server.app.state.kokoro = FakeKokoro(languages=("fr", "it"))
+    FakeInstance.fail_start = {"ayaka"}
+
+    resp = client.post("/tts", json={"text": "こんにちは", "text_lang": "ja", "voice": "ayaka"})
+
+    assert resp.status_code == 503 and "cannot start ayaka" in resp.json()["detail"]
+    assert "X-Fallback-Voice" not in resp.headers
+
+
+def test_no_fallback_without_a_kokoro_engine(client):
+    FakeInstance.fail_start = {"ayaka"}
+
+    assert client.post("/tts", json={"text": "hi", "text_lang": "ja", "voice": "ayaka"}).status_code == 503
+
+
+def test_no_fallback_for_an_unknown_voice(client, kokoro):
+    resp = client.post("/tts", json={"text": "hi", "text_lang": "ja", "voice": "nobody"})
+
+    assert resp.status_code == 404 and kokoro.calls == []
+
+
+def test_a_kokoro_voice_that_fails_is_not_retried(client, kokoro):
+    kokoro.fail = True
+
+    resp = client.post("/tts", json={"text": "x", "text_lang": "fr", "voice": "ff_siwis"})
+
+    assert resp.status_code == 503 and len(kokoro.calls) == 1 and "X-Fallback-Voice" not in resp.headers
+
+
+def test_when_the_fallback_fails_too_the_error_names_both(client, kokoro):
+    kokoro.fail = True
+    FakeInstance.fail_start = {"ayaka"}
+
+    resp = client.post("/tts", json={"text": "hi", "text_lang": "ja", "voice": "ayaka"})
+
+    assert resp.status_code == 503
+    assert "cannot start ayaka" in resp.json()["detail"] and "kokoro failed" in resp.json()["detail"]
+
+
+def test_normal_responses_carry_no_fallback_headers(client, kokoro):
+    resp = client.post("/tts", json={"text": "hi", "text_lang": "ja", "voice": "ayaka"})
+
+    assert resp.status_code == 200 and "X-Fallback-Voice" not in resp.headers and kokoro.calls == []
+
+
+def test_a_fallback_leaves_a_pinned_voice_loaded(tmp_path):
+    FakeInstance.reset()
+    make_voices(tmp_path, "ayaka", "juliet", juliet={"ref_lang": "en"})
+    tts_server.app.state.pool = TTSPool(
+        TTSConfig(weights_root=str(tmp_path)), size=2, base_port=9300, factory=FakeInstance, pinned=["juliet"]
+    )
+    tts_server.app.state.preload = []
+    tts_server.app.state.kokoro = FakeKokoro()
+    try:
+        with TestClient(tts_server.app) as c:
+            c.post("/voice", json={"name": "juliet"})
+            FakeInstance.fail_start = {"ayaka"}
+            resp = c.post("/tts", json={"text": "hi", "text_lang": "ja", "voice": "ayaka"})
+            assert resp.headers["X-Fallback-Voice"] == "jf_alpha"
+            assert "juliet" in c.get("/voices").json()["loaded"]
+    finally:
+        tts_server.app.state.kokoro = None

@@ -86,3 +86,16 @@ def test_detect_returns_the_language_among_candidates(client):
 
 def test_detect_rejects_a_malformed_body(client):
     assert client.post("/detect", content=b"\x00\x00\x00").status_code == 400
+
+
+@pytest.mark.parametrize("language", ["fr", "it"])
+def test_transcribe_accepts_french_and_italian(client, language):
+    resp = client.post("/transcribe", params={"language": language}, content=_pcm(1600))
+
+    assert resp.status_code == 200 and resp.json()["language"] == language
+
+
+def test_the_default_language_set_can_include_french_and_italian():
+    from voice_services.stt.server import build_parser
+
+    assert build_parser().parse_args(["--languages", "en,ja,fr,it"]).languages == "en,ja,fr,it"

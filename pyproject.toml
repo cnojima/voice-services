@@ -22,6 +22,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 weights = ["huggingface_hub"]
+# Optional Kokoro voices (French, Italian, fallback). Needs Python <= 3.12 and espeak-ng.
+kokoro = ["kokoro>=0.9.4", "misaki[ja]>=0.9.4"]
 
 [tool.setuptools.packages.find]
 include = ["voice_services*"]
