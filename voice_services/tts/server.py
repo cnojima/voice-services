@@ -26,6 +26,8 @@ from voice_services.tts.pool import TTSPool, TTSUnavailable
 from voice_services.tts.voices import VoiceNotFoundError, default_weights_root, list_voices, load_voice
 
 TEXT_LANGUAGES = ("ja", "en", "fr", "it")
+# What a GPT-SoVITS voice can speak (upstream's text_lang set); fr and it are Kokoro's until cloned voices exist.
+GPT_SOVITS_LANGUAGES = ("ja", "en")
 
 
 @asynccontextmanager
@@ -265,6 +267,10 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     engine = _kokoro_engine(req.voice)
     if engine is not None:
         return _speak_kokoro(engine, req.voice, text, sampling, stream)
+    if req.text_lang not in GPT_SOVITS_LANGUAGES:  # reject before a swap, and before a fallback could hide it
+        raise HTTPException(
+            400, f"{req.voice!r} is a GPT-SoVITS voice and cannot speak {req.text_lang!r}; use a {req.text_lang} voice (see GET /voices)"
+        )
     try:
         return _speak_pool(req.voice, text, req.text_lang, sampling, stream)
     except HTTPException as e:

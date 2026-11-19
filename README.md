@@ -73,7 +73,7 @@ pretrained base models. This repo does not install that checkout. Each pool inst
 `pip install -e ".[kokoro]"` adds [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) voices that run inside the TTS server (no pool slot):
 `ff_siwis` (French), `if_sara` (Italian), and English and Japanese ones that answer when a GPT-SoVITS voice cannot.
 They need espeak-ng (the copy pip bundles crashes on macOS: set `VOICE_ESPEAK_LIBRARY` and `VOICE_ESPEAK_DATA`) and, for Japanese,
-the unidic dictionary (`python -m unidic download`). The server logs the voices it can speak at start-up. Details: `docs/TTS_API.md`.
+the unidic dictionary (`python -m unidic download`). The server loads the model at start-up (a first start downloads about 330 MB from Hugging Face, so it can take a while) and logs the voices it can speak. Details: `docs/TTS_API.md`.
 
 ## Status
 

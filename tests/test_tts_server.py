@@ -281,11 +281,19 @@ def test_tts_streams_a_kokoro_voice(client, kokoro):
     assert FakeInstance.created == []
 
 
-def test_tts_accepts_fr_and_it_and_still_400s_for_de(client, kokoro):
-    for lang in ("fr", "it"):
-        assert client.post("/tts", json={"text": "x", "text_lang": lang, "voice": "ayaka"}).status_code == 200
-    resp = client.post("/tts", json={"text": "x", "text_lang": "de", "voice": "ayaka"})
+def test_tts_accepts_fr_and_it_for_kokoro_and_still_400s_for_de(client, kokoro):
+    for lang, voice in (("fr", "ff_siwis"), ("it", "if_sara")):
+        assert client.post("/tts", json={"text": "x", "text_lang": lang, "voice": voice}).status_code == 200
+    resp = client.post("/tts", json={"text": "x", "text_lang": "de", "voice": "ff_siwis"})
     assert resp.status_code == 400 and "ja" in resp.json()["detail"] and "fr" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("lang", ["fr", "it"])
+def test_a_gpt_sovits_voice_cannot_speak_fr_or_it_and_nothing_is_swapped(client, kokoro, lang):
+    resp = client.post("/tts", json={"text": "x", "text_lang": lang, "voice": "ayaka"})
+
+    assert resp.status_code == 400 and "ayaka" in resp.json()["detail"] and lang in resp.json()["detail"]
+    assert FakeInstance.created == [] and kokoro.calls == []  # no swap, and no fallback hiding it
 
 
 def test_tts_kokoro_ignores_sampling_except_speed(client, kokoro):
@@ -375,9 +383,9 @@ def test_a_streaming_start_failure_falls_back_too(client, kokoro):
 def test_the_fallback_voice_follows_text_lang_not_the_requested_voice(client, kokoro):
     FakeInstance.fail_start = {"ayaka"}
 
-    resp = client.post("/tts", json={"text": "Bonjour.", "text_lang": "fr", "voice": "ayaka"})
+    resp = client.post("/tts", json={"text": "Hello.", "text_lang": "en", "voice": "ayaka"})
 
-    assert resp.headers["X-Fallback-Voice"] == "ff_siwis"
+    assert resp.headers["X-Fallback-Voice"] == "af_heart"
 
 
 def test_no_fallback_for_a_language_kokoro_lacks(client):

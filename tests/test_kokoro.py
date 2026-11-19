@@ -144,3 +144,14 @@ def test_a_language_that_cannot_load_is_not_offered_but_the_others_still_work():
     with pytest.raises(RuntimeError, match="MeCab"):
         eng.synthesize("こんにちは", "jf_alpha", {})
     assert eng.synthesize("Bonjour.", "ff_siwis", {})[1] == 24000
+
+
+def test_a_stream_the_client_stops_reading_does_not_hold_the_engine():
+    """A disconnect may leave the response generator unfinished until a garbage collection: nothing may
+    be held while the client reads, or every later Kokoro request waits on it."""
+    eng, _ = engine()
+    _, chunks = eng.stream_tts("x", "ff_siwis", {})
+    next(chunks)  # one chunk read, then the client goes away without closing anything
+    done = threading.Event()
+    threading.Thread(target=lambda: (eng.synthesize("y", "ff_siwis", {}), done.set()), daemon=True).start()
+    assert done.wait(2), "an unfinished stream still holds the engine"

@@ -64,8 +64,7 @@ def _to_numpy(audio) -> np.ndarray:
 
 
 class _PcmStream:
-    """Audio chunks as 16-bit PCM bytes. A class, not a generator: closing a generator that was never
-    started skips its `finally`, which would leave the engine's lock held by `parts`."""
+    """Audio chunks as 16-bit PCM bytes, with a `close()` for the server to call."""
 
     def __init__(self, first: np.ndarray | None, parts: Iterator[np.ndarray]):
         self._first, self._parts = first, parts
@@ -128,16 +127,22 @@ class KokoroEngine:
         return self._pipelines[code]
 
     def _chunks(self, text: str, voice: str, sampling: dict) -> Iterator[np.ndarray]:
-        """Audio as the pipeline produces it. Holds the engine lock until exhausted or closed."""
+        """Audio as the pipeline produces it, one chunk per inference step."""
         if voice not in KOKORO_VOICES:
             raise VoiceNotFoundError(f"no Kokoro voice {voice!r}")
         if KOKORO_VOICES[voice] in self.errors:
             raise RuntimeError(f"Kokoro cannot speak {KOKORO_VOICES[voice]}: {self.errors[KOKORO_VOICES[voice]]}")
+        # The lock covers one inference step at a time, never the time a client spends reading: a client that
+        # disconnects leaves this generator unfinished until a garbage collection, and must not hold the engine.
         with self._lock:
-            pipeline = self._pipeline(KOKORO_VOICES[voice])
-            for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=sampling.get("speed_factor", 1)):
-                if audio is not None:
-                    yield _to_numpy(audio)
+            steps = iter(self._pipeline(KOKORO_VOICES[voice])(text, voice=voice, speed=sampling.get("speed_factor", 1)))
+        while True:
+            with self._lock:
+                step = next(steps, None)
+            if step is None:
+                return
+            if step[2] is not None:
+                yield _to_numpy(step[2])
 
     def synthesize(self, text: str, voice: str, sampling: dict | None = None) -> tuple[np.ndarray, int]:
         parts = list(self._chunks(text, voice, sampling or {}))
@@ -145,7 +150,7 @@ class KokoroEngine:
 
     def stream_tts(self, text: str, voice: str, sampling: dict | None = None) -> tuple[int, Iterator[bytes]]:
         """(sample_rate, chunks) of raw little-endian 16-bit mono PCM, returned once the first audio exists so a
-        failure surfaces before the caller commits to a response. Closing `chunks` releases the engine."""
+        failure surfaces before the caller commits to a response. Nothing is held between chunks."""
         parts = self._chunks(text, voice, sampling or {})
         first = next(parts, None)  # raises here on any failure to start
 

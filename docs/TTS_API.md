@@ -156,12 +156,12 @@ byte is sent):
 
 | status | when |
 |---|---|
-| 400 | empty `text`, or unsupported `text_lang` |
+| 400 | empty `text`, unsupported `text_lang`, or a GPT-SoVITS voice asked to speak `fr` or `it` (Kokoro's languages for now) |
 | 404 | unknown `voice`; or a Kokoro voice on a server where Kokoro is off or cannot speak its language (`detail` says why) |
 | 422 | malformed body |
 | 503 | no instance could serve the request (not ready, crashed, or failed to start), and no Kokoro fallback applied; `detail` carries the reason |
 
-**Fallback.** When a GPT-SoVITS voice would answer 503 (before any audio is sent, streaming or not), the server instead
+**Fallback.** When a GPT-SoVITS voice would answer 503 before any audio is sent (for a streamed request, before the stream's header arrives), the server instead
 speaks Kokoro's voice for `text_lang` and answers 200 with `X-Fallback-Voice: <kokoro voice>` and `X-Fallback-From: <requested voice>`;
 each fallback is logged. There is no fallback for 400, 404 or 422, for a Kokoro voice that fails, or for a language Kokoro cannot speak
 (the original 503 stands); if Kokoro fails too, the 503 names both errors. A fallback uses no pool instance, so a pinned voice stays loaded.
