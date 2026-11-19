@@ -127,3 +127,20 @@ def test_closing_a_stream_that_was_never_read_releases_the_engine():
     done = threading.Event()
     threading.Thread(target=lambda: (eng.synthesize("y", "ff_siwis", {}), done.set()), daemon=True).start()
     assert done.wait(2), "the engine is still held by the closed stream"
+
+
+def test_a_language_that_cannot_load_is_not_offered_but_the_others_still_work():
+    def factory(code):
+        if code == "j":
+            raise RuntimeError("Failed initializing MeCab")
+        return FakePipeline(code, [])
+
+    eng = KokoroEngine(pipeline_factory=factory)
+
+    assert eng.available and eng.error is None  # most of it works
+    assert "jf_alpha" not in eng.voices() and "ff_siwis" in eng.voices()
+    assert eng.voice_for("ja") is None and eng.voice_for("fr") == "ff_siwis"
+    assert "MeCab" in eng.errors["ja"]
+    with pytest.raises(RuntimeError, match="MeCab"):
+        eng.synthesize("こんにちは", "jf_alpha", {})
+    assert eng.synthesize("Bonjour.", "ff_siwis", {})[1] == 24000

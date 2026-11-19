@@ -1,4 +1,4 @@
-"""GPT-SoVITS voices as a local HTTP API (contract: docs/TTS_API.md).
+"""GPT-SoVITS voices (and Kokoro voices, in-process) as a local HTTP API (contract: docs/TTS_API.md).
 
     python -m voice_services.tts                                  # :8772, pool of 2
     python -m voice_services.tts --pool-size 3 --preload ayaka,rosamund,kafka
@@ -21,10 +21,11 @@ from pydantic import BaseModel, Field
 from voice_services import env
 from voice_services.config import TTSConfig
 from voice_services.tts import pauses, pronunciations
+from voice_services.tts.kokoro import KOKORO_VOICES, KokoroEngine
 from voice_services.tts.pool import TTSPool, TTSUnavailable
 from voice_services.tts.voices import VoiceNotFoundError, default_weights_root, list_voices, load_voice
 
-TEXT_LANGUAGES = ("ja", "en")
+TEXT_LANGUAGES = ("ja", "en", "fr", "it")
 
 
 @asynccontextmanager
@@ -98,6 +99,21 @@ def _pool() -> TTSPool:
     return app.state.pool
 
 
+def _kokoro_engine(voice: str) -> KokoroEngine | None:
+    """The Kokoro engine when `voice` is one of its voices; None for a pool voice. A Kokoro voice with no
+    working engine is a 404 whose message says why."""
+    if voice not in KOKORO_VOICES:
+        return None
+    engine = getattr(app.state, "kokoro", None)
+    if engine is None:
+        raise HTTPException(404, f"{voice!r} is a Kokoro voice, but Kokoro is not enabled on this server")
+    if not engine.available:
+        raise HTTPException(404, f"{voice!r} is a Kokoro voice, but Kokoro is unavailable: {engine.error}")
+    if voice not in engine.voices():
+        raise HTTPException(404, f"{voice!r} is a Kokoro voice, but Kokoro cannot speak {KOKORO_VOICES[voice]}: {engine.errors[KOKORO_VOICES[voice]]}")
+    return engine
+
+
 def _acquire(voice: str):
     try:
         return _pool().acquire(voice)
@@ -121,12 +137,22 @@ def voices(language: str | None = None) -> JSONResponse:
             manifest = load_voice(pool.cfg.weights_root, name)
         except VoiceNotFoundError:
             continue
-        out.append({"name": name, "ref_lang": manifest["ref_lang"], "version": manifest["version"]})
+        out.append({"name": name, "ref_lang": manifest["ref_lang"], "version": manifest["version"], "engine": "gpt-sovits"})
+    engine = getattr(app.state, "kokoro", None)
+    if engine is not None and engine.available:
+        out += [
+            {"name": name, "ref_lang": lang, "version": None, "engine": "kokoro"}
+            for name, lang in engine.voices().items()
+            if language is None or lang == language
+        ]
+    # `loaded` is the pool's: Kokoro voices answer at once and never need loading.
     return JSONResponse({"loaded": pool.loaded(), "pinned": pool.pinned(), "voices": out})
 
 
 @app.post("/voice")
 def set_voice(req: VoiceRequest) -> JSONResponse:
+    if _kokoro_engine(req.name) is not None:
+        return JSONResponse({"voice": req.name, "swapped": False})
     with _acquire(req.name) as lease:
         return JSONResponse({"voice": req.name, "swapped": lease.swapped})
 
@@ -159,7 +185,7 @@ def get_pronunciations(lang: str) -> JSONResponse:
 def patch_pronunciations(lang: str, req: PronunciationUpdate) -> JSONResponse:
     """Merge into `pronunciations/<lang>.json` and apply to the running server, no restart.
 
-    Words match case-insensitively, so setting `gpu` replaces an existing `GPU`. `lang` is `en` or `ja`.
+    Words match case-insensitively, so setting `gpu` replaces an existing `GPU`. `lang` is one of `ja`, `en`, `fr`, `it`.
     The response is the whole lexicon after the change.
     """
     _check_lang(lang)
@@ -171,6 +197,57 @@ def patch_pronunciations(lang: str, req: PronunciationUpdate) -> JSONResponse:
         raise HTTPException(400, str(e)) from e
     app.state.pronunciations = {**getattr(app.state, "pronunciations", {}), lang: lexicon}
     return JSONResponse({"lang": lang, "entries": lexicon.entries})
+
+
+def _wav_response(wav, sr: int) -> Response:
+    buf = BytesIO()
+    sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
+    return Response(buf.getvalue(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
+
+
+def _stream_response(sr: int, chunks, release) -> StreamingResponse:
+    """Stream raw PCM. `release(failed)` runs once the stream ends, with the error if it broke."""
+
+    def body():
+        failed = None
+        try:
+            yield from chunks
+        except Exception as e:  # noqa: BLE001 -- bytes are already out; the connection just ends
+            failed = e
+            print(f"TTS stream failed mid-response: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        finally:
+            chunks.close()
+            release(failed)
+
+    return StreamingResponse(body(), media_type="audio/L16", headers={"X-Sample-Rate": str(sr)})
+
+
+def _speak_pool(voice: str, text: str, language: str, sampling: dict, stream: bool):
+    lease = _acquire(voice)
+    if not stream:
+        try:
+            with lease:
+                wav, sr = lease.inst.synthesize(text, language, sampling)
+        except Exception as e:  # noqa: BLE001 -- the lease already discarded a dead instance
+            raise HTTPException(503, f"{type(e).__name__}: {e}") from e
+        return _wav_response(wav, sr)
+    try:
+        sr, chunks = lease.inst.stream_tts(text, language, sampling)
+    except Exception as e:  # noqa: BLE001
+        lease.release(e)
+        raise HTTPException(503, f"{type(e).__name__}: {e}") from e
+    return _stream_response(sr, chunks, lease.release)
+
+
+def _speak_kokoro(engine: KokoroEngine, voice: str, text: str, sampling: dict, stream: bool):
+    try:
+        if not stream:
+            wav, sr = engine.synthesize(text, voice, sampling)
+            return _wav_response(wav, sr)
+        sr, chunks = engine.stream_tts(text, voice, sampling)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"{type(e).__name__}: {e}") from e
+    return _stream_response(sr, chunks, lambda failed: None)
 
 
 @app.post("/tts")
@@ -185,35 +262,10 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     default_gap = getattr(app.state, "fragment_interval", None)
     if default_gap is not None:
         sampling.setdefault("fragment_interval", default_gap)
-    lease = _acquire(req.voice)
-    if not stream:
-        try:
-            with lease:
-                wav, sr = lease.inst.synthesize(text, req.text_lang, sampling)
-        except Exception as e:  # noqa: BLE001 -- the lease already discarded a dead instance
-            raise HTTPException(503, f"{type(e).__name__}: {e}") from e
-        buf = BytesIO()
-        sf.write(buf, wav, sr, format="WAV", subtype="PCM_16")
-        return Response(buf.getvalue(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
-
-    try:
-        sr, chunks = lease.inst.stream_tts(text, req.text_lang, sampling)
-    except Exception as e:  # noqa: BLE001
-        lease.release(e)
-        raise HTTPException(503, f"{type(e).__name__}: {e}") from e
-
-    def body():
-        failed = None
-        try:
-            yield from chunks
-        except Exception as e:  # noqa: BLE001 -- bytes are already out; the connection just ends
-            failed = e
-            print(f"TTS stream failed mid-response: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        finally:
-            chunks.close()
-            lease.release(failed)
-
-    return StreamingResponse(body(), media_type="audio/L16", headers={"X-Sample-Rate": str(sr)})
+    engine = _kokoro_engine(req.voice)
+    if engine is not None:
+        return _speak_kokoro(engine, req.voice, text, sampling, stream)
+    return _speak_pool(req.voice, text, req.text_lang, sampling, stream)
 
 
 def build_parser():
@@ -261,6 +313,11 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError:
         sys.exit(f"VOICE_TTS_FRAGMENT_INTERVAL: not a number: {gap!r}")
     app.state.admin_token = os.environ.get("VOICE_TTS_ADMIN_TOKEN", "")
+    app.state.kokoro = KokoroEngine()  # loads the model now (a first run downloads it); a failure leaves it unavailable
+    kokoro = app.state.kokoro
+    print(f"Kokoro voices: {', '.join(kokoro.voices()) or 'none'}", flush=True)
+    for lang, why in kokoro.errors.items():
+        print(f"Kokoro cannot speak {lang}: {why}", flush=True)
     app.state.preload = [v.strip() for v in args.preload.split(",") if v.strip()]
 
     for stream in (sys.stdout, sys.stderr):

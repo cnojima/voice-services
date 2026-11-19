@@ -89,22 +89,37 @@ class KokoroEngine:
     model is loaded now so a missing package or weight shows as `available == False` at startup."""
 
     def __init__(self, pipeline_factory: Callable[[str], object] | None = None):
-        self.error: str | None = None
+        self.errors: dict[str, str] = {}  # language -> why it cannot be spoken; empty when all can
         self._lock = threading.Lock()
         self._pipelines: dict[str, object] = {}
         try:
             self._factory = pipeline_factory or _real_factory()
-            self._pipeline("en")  # fails here, not on a user's turn
-        except Exception as e:  # noqa: BLE001 -- ImportError, a missing download, an espeak problem
-            self.error = f"{type(e).__name__}: {e}"
+        except Exception as e:  # noqa: BLE001 -- ImportError, a missing download, a bad espeak path
+            self.errors = {lang: f"{type(e).__name__}: {e}" for lang in _LANG_CODE}
+            return
+        for lang in _LANG_CODE:  # fail here, not on a user's turn; one language failing (Japanese needs unidic) spares the rest
+            try:
+                self._pipeline(lang)
+            except Exception as e:  # noqa: BLE001
+                self.errors[lang] = f"{type(e).__name__}: {e}"
 
     @property
     def available(self) -> bool:
-        return self.error is None
+        """At least one language can be spoken."""
+        return len(self.errors) < len(_LANG_CODE)
+
+    @property
+    def error(self) -> str | None:
+        """Why nothing can be spoken, or None when something can."""
+        return None if self.available else "; ".join(sorted(set(self.errors.values())))
+
+    def voices(self) -> dict[str, str]:
+        """The catalogue voices that can be spoken now, name -> language."""
+        return {name: lang for name, lang in KOKORO_VOICES.items() if lang not in self.errors}
 
     def voice_for(self, language: str) -> str | None:
         """The catalogue's voice for `language`, or None."""
-        return next((name for name, lang in KOKORO_VOICES.items() if lang == language), None)
+        return next((name for name, lang in self.voices().items() if lang == language), None)
 
     def _pipeline(self, language: str):
         code = _LANG_CODE[language]
@@ -114,10 +129,10 @@ class KokoroEngine:
 
     def _chunks(self, text: str, voice: str, sampling: dict) -> Iterator[np.ndarray]:
         """Audio as the pipeline produces it. Holds the engine lock until exhausted or closed."""
-        if not self.available:
-            raise RuntimeError(f"Kokoro is unavailable: {self.error}")
         if voice not in KOKORO_VOICES:
             raise VoiceNotFoundError(f"no Kokoro voice {voice!r}")
+        if KOKORO_VOICES[voice] in self.errors:
+            raise RuntimeError(f"Kokoro cannot speak {KOKORO_VOICES[voice]}: {self.errors[KOKORO_VOICES[voice]]}")
         with self._lock:
             pipeline = self._pipeline(KOKORO_VOICES[voice])
             for _graphemes, _phonemes, audio in pipeline(text, voice=voice, speed=sampling.get("speed_factor", 1)):
