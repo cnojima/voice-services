@@ -28,30 +28,14 @@ CANDIDATES = {
 SAMPLE_RATE = 24000
 
 
-def use_system_espeak() -> None:
-    """The espeak-ng that pip bundles (espeakng-loader) has its build machine's data path baked in and crashes on
-    macOS. VOICE_ESPEAK_LIBRARY and VOICE_ESPEAK_DATA (e.g. Homebrew's lib/libespeak-ng.dylib and
-    share/espeak-ng-data) point misaki at an installed espeak-ng instead."""
-    import os
-
-    lib, data = os.environ.get("VOICE_ESPEAK_LIBRARY"), os.environ.get("VOICE_ESPEAK_DATA")
-    if not (lib or data):
-        return
-    import misaki.espeak  # noqa: F401 -- sets the bundled paths on import; override after it
-    from phonemizer.backend.espeak.wrapper import EspeakWrapper
-
-    if lib:
-        EspeakWrapper.set_library(lib)
-    if data:
-        EspeakWrapper.set_data_path(data)
-
-
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--lang", choices=sorted(LANG_CODE), help="one language (default: all)")
     p.add_argument("--voice", help="one voice (default: the candidates for each language)")
     p.add_argument("--out", default="samples")
     args = p.parse_args()
+
+    from voice_services.tts.kokoro import use_system_espeak
 
     use_system_espeak()
     from kokoro import KPipeline  # imported here so --help works without it
