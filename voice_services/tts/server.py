@@ -265,7 +265,29 @@ def tts(req: TTSRequest, stream: bool = Query(False)):
     engine = _kokoro_engine(req.voice)
     if engine is not None:
         return _speak_kokoro(engine, req.voice, text, sampling, stream)
-    return _speak_pool(req.voice, text, req.text_lang, sampling, stream)
+    try:
+        return _speak_pool(req.voice, text, req.text_lang, sampling, stream)
+    except HTTPException as e:
+        if e.status_code != 503:  # an unknown voice, a bad request: Kokoro cannot help
+            raise
+        return _fall_back(e, req, text, sampling, stream)
+
+
+def _fall_back(failure: HTTPException, req: TTSRequest, text: str, sampling: dict, stream: bool):
+    """Answer a failed pool voice with Kokoro's voice for the language, marked with headers; the failure
+    stands when Kokoro has no voice for it, or fails too. Nothing is sent yet, so a fallback is safe."""
+    engine = getattr(app.state, "kokoro", None)
+    voice = engine.voice_for(req.text_lang) if engine is not None and engine.available else None
+    if voice is None:
+        raise failure
+    try:
+        resp = _speak_kokoro(engine, voice, text, sampling, stream)
+    except HTTPException as e:
+        raise HTTPException(503, f"{failure.detail}; the Kokoro fallback failed too: {e.detail}") from e
+    print(f"TTS: {req.voice!r} unavailable ({failure.detail}); spoke {voice!r}", file=sys.stderr, flush=True)
+    resp.headers["X-Fallback-Voice"] = voice
+    resp.headers["X-Fallback-From"] = req.voice
+    return resp
 
 
 def build_parser():
